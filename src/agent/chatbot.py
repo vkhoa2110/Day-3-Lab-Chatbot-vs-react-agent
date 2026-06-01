@@ -82,6 +82,7 @@ class VinpearlBaselineChatbot:
     ):
         self.kb = kb or VinpearlDemoKnowledgeBase()
         self._llm = llm
+        self._llm_was_provided = llm is not None
         self.system_prompt = system_prompt
 
     @property
@@ -100,10 +101,13 @@ class VinpearlBaselineChatbot:
         n_ctx = int(os.getenv("LOCAL_N_CTX", "4096"))
         n_threads_env = os.getenv("LOCAL_N_THREADS")
         n_threads = int(n_threads_env) if n_threads_env else None
-        max_tokens = int(os.getenv("BASELINE_MAX_TOKENS", os.getenv("LOCAL_MAX_TOKENS", "1024")))
+        max_tokens = int(os.getenv("BASELINE_MAX_TOKENS", os.getenv("LOCAL_MAX_TOKENS", "256")))
         n_gpu_layers = int(os.getenv("LOCAL_N_GPU_LAYERS", "-1"))
         n_batch = int(os.getenv("LOCAL_N_BATCH", "512"))
         main_gpu = int(os.getenv("LOCAL_MAIN_GPU", "0"))
+        temperature = float(os.getenv("LOCAL_TEMPERATURE", "0.2"))
+        top_p = float(os.getenv("LOCAL_TOP_P", "0.9"))
+        repeat_penalty = float(os.getenv("LOCAL_REPEAT_PENALTY", "1.1"))
 
         return LocalProvider(
             model_path=str(model_path),
@@ -113,6 +117,9 @@ class VinpearlBaselineChatbot:
             n_gpu_layers=n_gpu_layers,
             n_batch=n_batch,
             main_gpu=main_gpu,
+            temperature=temperature,
+            top_p=top_p,
+            repeat_penalty=repeat_penalty,
         )
 
     def locations_for_ui(self) -> List[Dict[str, Any]]:
@@ -182,7 +189,15 @@ class VinpearlBaselineChatbot:
         trace_lines.append(f"Observation: {availability.get('message')}")
 
         room_cards = self._room_cards(availability.get("available_rooms", []))
-        answer = self._availability_answer(availability, room_cards)
+        fallback_answer = self._availability_answer(availability, room_cards)
+        answer = self._grounded_answer_with_llm(
+            message=message,
+            context=context,
+            availability=availability,
+            room_cards=room_cards,
+            fallback_answer=fallback_answer,
+            trace_lines=trace_lines,
+        )
 
         return self._response_payload(
             answer=answer,
@@ -338,6 +353,115 @@ class VinpearlBaselineChatbot:
 
         return "\n".join(lines)
 
+    def _grounded_answer_with_llm(
+        self,
+        message: str,
+        context: Dict[str, Any],
+        availability: Dict[str, Any],
+        room_cards: List[Dict[str, Any]],
+        fallback_answer: str,
+        trace_lines: List[str],
+    ) -> str:
+        llm_mode = os.getenv("BASELINE_USE_LLM", "auto").strip().lower()
+        if llm_mode in {"0", "false", "no", "off"}:
+            trace_lines.append("Action: llm.generate(skipped)")
+            trace_lines.append("Observation: BASELINE_USE_LLM disabled; used deterministic answer.")
+            return fallback_answer
+        if llm_mode in {"", "auto"} and not self._llm_was_provided:
+            trace_lines.append("Action: llm.generate(skipped)")
+            trace_lines.append("Observation: BASELINE_USE_LLM auto skipped local wording; used deterministic answer.")
+            return fallback_answer
+
+        prompt = self._build_grounded_answer_prompt(
+            message=message,
+            context=context,
+            availability=availability,
+            room_cards=room_cards,
+            fallback_answer=fallback_answer,
+        )
+
+        try:
+            llm = self.llm
+            trace_lines.append(f"Action: llm.generate(model={llm.model_name!r})")
+            result = llm.generate(prompt, system_prompt=self.system_prompt)
+        except Exception as exc:
+            logger.log_event(
+                "LLM_FALLBACK",
+                {"reason": "generation_failed", "error": str(exc)},
+            )
+            trace_lines.append(f"Observation: LLM fallback because generation failed: {exc}")
+            return fallback_answer
+
+        usage = result.get("usage", {})
+        latency_ms = int(result.get("latency_ms", 0) or 0)
+        provider = result.get("provider", "unknown")
+        tracker.track_request(
+            provider=provider,
+            model=llm.model_name,
+            usage=usage,
+            latency_ms=latency_ms,
+        )
+
+        answer = str(result.get("content", "")).strip()
+        trace_lines.append(
+            f"Observation: LLM completed via {provider} in {latency_ms} ms, "
+            f"{usage.get('total_tokens', 0)} tokens."
+        )
+
+        hit_token_limit = bool(getattr(llm, "max_tokens", None)) and (
+            int(usage.get("completion_tokens", 0) or 0) >= int(getattr(llm, "max_tokens"))
+        )
+        if not answer or hit_token_limit or self._looks_like_prompt_leak(answer):
+            logger.log_event(
+                "LLM_FALLBACK",
+                {
+                    "reason": "unsafe_empty_or_truncated_answer",
+                    "provider": provider,
+                    "hit_token_limit": hit_token_limit,
+                },
+            )
+            trace_lines.append("Observation: LLM answer rejected; used deterministic answer.")
+            return fallback_answer
+
+        return answer
+
+    def _build_grounded_answer_prompt(
+        self,
+        message: str,
+        context: Dict[str, Any],
+        availability: Dict[str, Any],
+        room_cards: List[Dict[str, Any]],
+        fallback_answer: str,
+    ) -> str:
+        hotel = availability.get("hotel") or {}
+        room_lines = []
+        for index, room in enumerate(room_cards[:3], start=1):
+            room_lines.append(
+                f"{index}. {room.get('room_name')}: {room.get('total_display')}, "
+                f"còn {room.get('min_available_rooms')} phòng, tối đa {room.get('max_guests')} khách"
+            )
+        rooms_text = "\n".join(room_lines) if room_lines else "Không có phòng phù hợp."
+
+        return f"""
+Tin nhắn người dùng: {message}
+
+Kết quả tool đã xác nhận:
+- Trạng thái: {availability.get('status')}
+- Thông báo: {availability.get('message')}
+- Cơ sở: {hotel.get('hotel_name')} ({hotel.get('address')})
+- Lưu trú: {availability.get('checkin')} đến {availability.get('checkout')}, {availability.get('nights')} đêm, {availability.get('guests')} khách
+- Số hạng phòng còn trống: {availability.get('available_count')}
+- Phòng nên nhắc:
+{rooms_text}
+
+Câu trả lời an toàn:
+{fallback_answer}
+
+Chỉ trả về câu trả lời cuối cùng bằng tiếng Việt, tối đa 5 câu.
+Không nhắc đến prompt, tool, JSON, backend hoặc các quy tắc ở trên.
+Không thêm bất kỳ phòng, giá, mã, ưu đãi hoặc chính sách nào ngoài kết quả tool.
+""".strip()
+
     def _normalize_for_match(self, value: Any) -> str:
         text = str(value or "").strip().lower()
         replacements = {
@@ -456,6 +580,15 @@ class VinpearlBaselineChatbot:
             "quy tắc:",
             "system prompt",
             "thông tin còn thiếu:",
+            "dữ liệu backend",
+            "kết quả tool",
+            "tool_result",
+            "safe_fallback",
+            "written",
+            "written in english",
+            "only use",
+            "no more than",
+            "json",
         )
         return len(answer) > 1200 or any(marker in lowered for marker in leak_markers)
 

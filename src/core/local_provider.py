@@ -1,8 +1,13 @@
 import time
 import os
 from typing import Dict, Any, Optional, Generator
-from llama_cpp import Llama
 from src.core.llm_provider import LLMProvider
+
+try:
+    from llama_cpp import Llama
+except ModuleNotFoundError:
+    Llama = None
+
 
 class LocalProvider(LLMProvider):
     """
@@ -18,6 +23,9 @@ class LocalProvider(LLMProvider):
         n_gpu_layers: int = -1,
         n_batch: int = 512,
         main_gpu: int = 0,
+        temperature: float = 0.2,
+        top_p: float = 0.9,
+        repeat_penalty: float = 1.1,
     ):
         """
         Initialize the local Llama model.
@@ -32,6 +40,16 @@ class LocalProvider(LLMProvider):
         """
         super().__init__(model_name=os.path.basename(model_path))
         self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.repeat_penalty = repeat_penalty
+
+        if Llama is None:
+            raise RuntimeError(
+                "llama-cpp-python is not installed in the active Python environment. "
+                "Activate the project venv or install requirements with: "
+                "python3 -m pip install -r requirements.txt"
+            )
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found at {model_path}. Please download it first.")
@@ -61,6 +79,9 @@ class LocalProvider(LLMProvider):
             full_prompt,
             max_tokens=self.max_tokens,
             stop=["<|end|>", "Observation:"],
+            temperature=self.temperature,
+            top_p=self.top_p,
+            repeat_penalty=self.repeat_penalty,
             echo=False
         )
 
@@ -92,6 +113,9 @@ class LocalProvider(LLMProvider):
             full_prompt,
             max_tokens=self.max_tokens,
             stop=["<|end|>", "Observation:"],
+            temperature=self.temperature,
+            top_p=self.top_p,
+            repeat_penalty=self.repeat_penalty,
             stream=True
         )
 
