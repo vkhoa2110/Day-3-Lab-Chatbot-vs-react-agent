@@ -34,6 +34,7 @@ OFF_TOPIC_HINTS = {
 
 
 ROOM_PAGE_SIZE = 5
+SUPPORT_HOTLINE = "1900 56 56 56"
 
 
 class VinpearlRoomAgent:
@@ -158,6 +159,7 @@ class VinpearlRoomAgent:
                 "dataset demo. Vui lòng gửi địa chỉ/cơ sở Vinpearl, ngày nhận "
                 "phòng, ngày trả phòng và số khách."
             )
+            answer += " " + self._hotline_note()
             return finish(answer, trace, context=context, status="out_of_scope")
 
         request = self._extract_request(message, context, llm_extraction)
@@ -219,6 +221,7 @@ class VinpearlRoomAgent:
                     )
                     + "."
                 )
+                answer += " " + self._hotline_note()
                 return finish(
                     answer,
                     trace,
@@ -288,8 +291,10 @@ class VinpearlRoomAgent:
         )
 
         if availability["status"] != "ok":
+            answer = availability.get("message", "Không thể kiểm tra tồn phòng.")
+            answer += " " + self._hotline_note()
             return finish(
-                availability.get("message", "Không thể kiểm tra tồn phòng."),
+                answer,
                 trace,
                 context=self._merge_context(context, request),
                 status=availability["status"],
@@ -302,6 +307,7 @@ class VinpearlRoomAgent:
                 f"{self._display_date(request['checkin'])} đến {self._display_date(request['checkout'])}. "
                 "Bạn có thể thử đổi ngày, giảm số khách hoặc chọn cơ sở Vinpearl khác."
             )
+            answer += " " + self._hotline_note()
             return finish(
                 answer,
                 trace,
@@ -309,12 +315,45 @@ class VinpearlRoomAgent:
                 status="no_rooms",
             )
 
-        follow_up = self._classify_follow_up(message, context)
+        rule_follow_up = self._classify_follow_up(message, context)
+        llm_follow_up = self._extract_follow_up_with_llm(message, context, availability["options"])
+        if llm_follow_up and not llm_follow_up.get("_error"):
+            add_trace(
+                "Dùng OpenAI để hiểu tiêu chí follow-up từ kết quả tìm phòng trước đó.",
+                "openai_extract_follow_up_criteria(message=...)",
+                {
+                    "provider": llm_follow_up.get("_provider"),
+                    "model": llm_follow_up.get("_model"),
+                    "error": llm_follow_up.get("_error"),
+                    "usage": llm_follow_up.get("_usage"),
+                    "type": llm_follow_up.get("type"),
+                    "criteria": llm_follow_up.get("criteria", {}),
+                },
+            )
+        elif llm_follow_up and llm_follow_up.get("_error"):
+            add_trace(
+                "OpenAI không xử lý được follow-up nên dùng bộ lọc nội bộ.",
+                "fallback_follow_up_parser(reason='openai_unavailable')",
+                {
+                    "provider": llm_follow_up.get("_provider"),
+                    "model": llm_follow_up.get("_model"),
+                    "available": False,
+                },
+            )
+
+        follow_up = self._merge_follow_up(rule_follow_up, llm_follow_up)
         add_trace(
             "Xem câu hỏi có phải follow-up từ kết quả tìm phòng trước đó hay không.",
             f"classify_follow_up(message={message!r})",
             follow_up,
         )
+        if follow_up["type"] == "out_of_scope":
+            answer = (
+                "Mình chỉ hỗ trợ các câu hỏi về tìm phòng trống và thông tin phòng "
+                "trong dataset demo Vinpearl."
+            )
+            answer += " " + self._hotline_note()
+            return finish(answer, trace, context=context, status="out_of_scope")
 
         options = availability["options"]
         if follow_up["type"] == "details":
@@ -587,18 +626,38 @@ class VinpearlRoomAgent:
             criteria["recommendation"] = criteria.get("recommendation", "best_value")
         if any(term in normalized for term in ("cao cap", "sang hon", "dat hon")):
             criteria["sort"] = "premium"
-        if any(term in normalized for term in ("rong hon", "dien tich lon", "lon hon")):
+        if any(
+            term in normalized
+            for term in (
+                "rong hon",
+                "dien tich lon",
+                "dien tich phong lon",
+                "phong lon",
+                "phong rong",
+                "lon hon",
+            )
+        ):
             criteria["sort"] = "largest"
         area_criteria = self._extract_area_criteria(normalized)
         if area_criteria:
             criteria.update(area_criteria)
             criteria.setdefault("sort", "largest")
+        bed_keywords = []
+        if "king" in normalized:
+            bed_keywords.append("king")
+        if "giuong don" in normalized:
+            bed_keywords.append("giuong don")
+        if "giuong doi" in normalized:
+            bed_keywords.append("giuong doi")
+        if bed_keywords:
+            criteria["bed_keywords"] = bed_keywords
         if "villa" in normalized:
             criteria["room_keyword"] = "villa"
         if any(term in normalized for term in ("family", "gia dinh")):
             criteria["room_keyword"] = "family"
         if "an sang" in normalized or "buffet" in normalized:
             criteria["amenity_keyword"] = "buffet"
+            criteria["amenity_keywords"] = ["buffet"]
         if any(term in normalized for term in ("huy mien phi", "mien phi huy")):
             criteria["policy_keyword"] = "Miễn phí"
 
@@ -749,6 +808,32 @@ class VinpearlRoomAgent:
                 if keyword in normalize_text(room.get("meal_plan", ""))
                 or any(keyword in normalize_text(item) for item in room.get("amenities", []))
             ]
+        if criteria.get("amenity_keywords"):
+            keywords = criteria["amenity_keywords"]
+            match_any = criteria.get("match_mode") == "any"
+            filtered = [
+                room
+                for room in filtered
+                if self._room_matches_keywords(
+                    room,
+                    keywords,
+                    [room.get("meal_plan", ""), *room.get("amenities", [])],
+                    match_any=match_any,
+                )
+            ]
+        if criteria.get("bed_keywords"):
+            keywords = criteria["bed_keywords"]
+            match_any = criteria.get("match_mode") == "any"
+            filtered = [
+                room
+                for room in filtered
+                if self._room_matches_keywords(
+                    room,
+                    keywords,
+                    room.get("bed_options", []),
+                    match_any=match_any,
+                )
+            ]
         if criteria.get("policy_keyword"):
             keyword = normalize_text(criteria["policy_keyword"])
             filtered = [
@@ -811,6 +896,25 @@ class VinpearlRoomAgent:
             filtered = [room for room in filtered if room["room_type_id"] not in displayed_ids]
 
         return filtered[:ROOM_PAGE_SIZE]
+
+    @staticmethod
+    def _room_matches_keywords(
+        room: Dict[str, Any],
+        keywords: List[str],
+        values: List[str],
+        match_any: bool = False,
+    ) -> bool:
+        normalized_values = [normalize_text(value) for value in values]
+        if not keywords:
+            return True
+
+        def has_keyword(keyword: str) -> bool:
+            normalized_keyword = normalize_text(keyword)
+            return any(normalized_keyword in value for value in normalized_values)
+
+        if match_any:
+            return any(has_keyword(keyword) for keyword in keywords)
+        return all(has_keyword(keyword) for keyword in keywords)
 
     def _select_room_from_message(
         self,
@@ -920,6 +1024,250 @@ class VinpearlRoomAgent:
             "total_matches": availability["total_matches"],
         }
 
+    def _merge_follow_up(
+        self,
+        rule_follow_up: Dict[str, Any],
+        llm_follow_up: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not llm_follow_up or llm_follow_up.get("_error"):
+            return rule_follow_up
+
+        llm_type = llm_follow_up.get("type") or "new_search"
+        if llm_type == "out_of_scope":
+            return {"type": "out_of_scope", "criteria": {}}
+
+        criteria = self._merge_criteria(
+            rule_follow_up.get("criteria") or {},
+            llm_follow_up.get("criteria") or {},
+        )
+        rule_type = rule_follow_up.get("type", "new_search")
+        if rule_type == "new_search" and rule_follow_up.get("date_update"):
+            merged = dict(rule_follow_up)
+            if criteria:
+                merged["criteria"] = criteria
+            return merged
+        if criteria:
+            return {"type": "refine", "criteria": criteria}
+        if llm_type == "refine":
+            return rule_follow_up
+        if llm_type == "new_search" and rule_type != "new_search":
+            return rule_follow_up
+        if llm_type in {"details", "more", "new_search", "refine"}:
+            return {"type": llm_type, "criteria": {}}
+        return rule_follow_up
+
+    @staticmethod
+    def _merge_criteria(
+        rule_criteria: Dict[str, Any],
+        llm_criteria: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        merged = dict(rule_criteria)
+        for key, value in llm_criteria.items():
+            if value in (None, "", [], {}):
+                continue
+            if key in {"bed_keywords", "amenity_keywords"}:
+                current = list(merged.get(key) or [])
+                for item in value:
+                    if item not in current:
+                        current.append(item)
+                merged[key] = current
+            else:
+                merged[key] = value
+        return merged
+
+    def _extract_follow_up_with_llm(
+        self,
+        message: str,
+        context: Dict[str, Any],
+        options: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        has_previous_result = bool(
+            context.get("last_room_options") or context.get("last_search")
+        )
+        if not has_previous_result or not self.llm or self.llm_disabled_reason:
+            return None
+
+        room_summaries = [
+            {
+                "room_code": room["room_code"],
+                "room_name": room["room_name"],
+                "area_sqm": room["area_sqm"],
+                "max_guests": room["max_guests"],
+                "bed_options": room["bed_options"],
+                "meal_plan": room["meal_plan"],
+                "amenities": room["amenities"],
+                "cancellation_policy": room["cancellation_policy"],
+                "total_vnd": room["total_vnd"],
+            }
+            for room in options
+        ]
+        system_prompt = (
+            "You extract structured follow-up intent and room filters for a Vinpearl "
+            "room availability agent. Return only a valid JSON object. Do not answer "
+            "the user and do not invent rooms. Classify unrelated topics as "
+            "type='out_of_scope'. Use type='refine' when the user asks for filters "
+            "such as bed type, breakfast, amenities, larger area, cheaper price, "
+            "or recommendations. Use type='details' for questions asking details "
+            "about displayed rooms. Use type='more' for other room options. "
+            "JSON keys: type, criteria. criteria keys may include sort "
+            "('cheapest','premium','largest','moderate'), recommendation "
+            "('moderate_budget','best_value'), room_keyword, bed_keywords, "
+            "amenity_keywords, policy_keyword, min_area_sqm, max_area_sqm, "
+            "budget_min_vnd, budget_max_vnd, match_mode. For Vietnamese filters, "
+            "return normalized keywords such as 'king', 'giuong doi', 'giuong don', "
+            "'buffet', 'ban cong', 'bon tam', 'wifi'."
+        )
+        prompt = json.dumps(
+            {
+                "message": message,
+                "conversation_context": self._context_for_log(context),
+                "available_rooms_in_current_search": room_summaries,
+            },
+            ensure_ascii=False,
+        )
+
+        try:
+            result = self.llm.generate(prompt, system_prompt=system_prompt)
+            logger.log_event(
+                "OPENAI_EXTRACT_FOLLOW_UP",
+                {
+                    "provider": result.get("provider"),
+                    "model": self.llm.model_name,
+                    "usage": result.get("usage", {}),
+                    "latency_ms": result.get("latency_ms"),
+                },
+            )
+            parsed = self._sanitize_llm_follow_up(
+                self._parse_json_object(result.get("content", ""))
+            )
+            parsed["_provider"] = result.get("provider")
+            parsed["_model"] = self.llm.model_name
+            parsed["_usage"] = result.get("usage", {})
+            return parsed
+        except Exception as exc:
+            error_message = self._safe_error_message(str(exc))
+            if "401" in error_message or "invalid_api_key" in error_message:
+                self.llm_disabled_reason = "openai_authentication_failed"
+            logger.log_event(
+                "OPENAI_EXTRACT_FOLLOW_UP_FAILED",
+                {
+                    "model": self.llm.model_name,
+                    "error_type": exc.__class__.__name__,
+                    "message": error_message,
+                },
+            )
+            return {
+                "_provider": "openai",
+                "_model": self.llm.model_name,
+                "_error": f"{exc.__class__.__name__}: {error_message}",
+            }
+
+    def _sanitize_llm_follow_up(self, parsed: Dict[str, Any]) -> Dict[str, Any]:
+        intent = self._normalize_enum(parsed.get("intent", ""))
+        raw_type = self._normalize_enum(parsed.get("type") or parsed.get("follow_up_type") or "")
+        if intent == "out_of_scope" or raw_type == "out_of_scope":
+            follow_type = "out_of_scope"
+        elif raw_type in {"details", "detail", "room_details"}:
+            follow_type = "details"
+        elif raw_type in {"more", "other", "other_options"}:
+            follow_type = "more"
+        elif raw_type in {"refine", "filter", "recommend"}:
+            follow_type = "refine"
+        elif raw_type in {"new_search", "search"}:
+            follow_type = "new_search"
+        else:
+            follow_type = "new_search"
+
+        raw_criteria = parsed.get("criteria") if isinstance(parsed.get("criteria"), dict) else {}
+        criteria = self._sanitize_criteria(raw_criteria)
+        if criteria and follow_type == "new_search":
+            follow_type = "refine"
+        return {"type": follow_type, "criteria": criteria}
+
+    def _sanitize_criteria(self, raw_criteria: Dict[str, Any]) -> Dict[str, Any]:
+        criteria: Dict[str, Any] = {}
+
+        sort = normalize_text(str(raw_criteria.get("sort") or ""))
+        if sort in {"cheapest", "premium", "largest", "moderate"}:
+            criteria["sort"] = sort
+
+        recommendation = self._normalize_enum(raw_criteria.get("recommendation") or "")
+        if recommendation in {"moderate_budget", "best_value"}:
+            criteria["recommendation"] = recommendation
+
+        room_keyword = normalize_text(str(raw_criteria.get("room_keyword") or ""))
+        if room_keyword:
+            criteria["room_keyword"] = room_keyword
+
+        bed_keywords = self._normalize_keyword_list(
+            raw_criteria.get("bed_keywords") or raw_criteria.get("bed_keyword"),
+            {
+                "king bed": "king",
+                "giuong king": "king",
+                "double": "giuong doi",
+                "single": "giuong don",
+                "twin": "giuong don",
+            },
+        )
+        if bed_keywords:
+            criteria["bed_keywords"] = bed_keywords
+
+        amenity_keywords = self._normalize_keyword_list(
+            raw_criteria.get("amenity_keywords")
+            or raw_criteria.get("amenity_keyword")
+            or raw_criteria.get("meal_keywords")
+            or raw_criteria.get("meal_keyword"),
+            {
+                "breakfast": "buffet",
+                "buffet sang": "buffet",
+                "wifi": "wi fi",
+                "wi-fi": "wi fi",
+            },
+        )
+        if amenity_keywords:
+            criteria["amenity_keywords"] = amenity_keywords
+
+        policy_keyword = normalize_text(str(raw_criteria.get("policy_keyword") or ""))
+        if policy_keyword:
+            criteria["policy_keyword"] = policy_keyword
+
+        for key in ("min_area_sqm", "max_area_sqm", "budget_min_vnd", "budget_max_vnd"):
+            value = self._coerce_positive_int(raw_criteria.get(key))
+            if value is not None:
+                criteria[key] = value
+
+        if criteria:
+            match_mode = normalize_text(str(raw_criteria.get("match_mode") or "all"))
+            criteria["match_mode"] = "any" if match_mode == "any" else "all"
+        return criteria
+
+    @staticmethod
+    def _normalize_keyword_list(value: Any, replacements: Dict[str, str]) -> List[str]:
+        if value in (None, "", [], {}):
+            return []
+        raw_items = value if isinstance(value, list) else [value]
+        keywords: List[str] = []
+        for item in raw_items:
+            keyword = normalize_text(str(item))
+            keyword = replacements.get(keyword, keyword)
+            if keyword and keyword not in {"none", "null"} and keyword not in keywords:
+                keywords.append(keyword)
+        return keywords
+
+    @staticmethod
+    def _coerce_positive_int(value: Any) -> Optional[int]:
+        if value in (None, "", "null"):
+            return None
+        try:
+            number = int(float(str(value).replace(",", ".")))
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    @staticmethod
+    def _normalize_enum(value: Any) -> str:
+        return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
     def _extract_request_with_llm(
         self,
         message: str,
@@ -1014,6 +1362,10 @@ class VinpearlRoomAgent:
     @staticmethod
     def _safe_error_message(message: str) -> str:
         return re.sub(r"sk-[A-Za-z0-9_*.-]+", "sk-***", message)
+
+    @staticmethod
+    def _hotline_note() -> str:
+        return f"Nếu cần tư vấn ngoài dữ liệu demo, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
 
     @staticmethod
     def _context_for_log(context: Dict[str, Any]) -> Dict[str, Any]:
@@ -1125,6 +1477,29 @@ class VinpearlRoomAgent:
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _criteria_summary(criteria: Dict[str, Any]) -> str:
+        pieces = []
+        if criteria.get("bed_keywords"):
+            pieces.append("giường " + ", ".join(criteria["bed_keywords"]))
+        if criteria.get("amenity_keywords"):
+            pieces.append(", ".join(criteria["amenity_keywords"]))
+        elif criteria.get("amenity_keyword"):
+            pieces.append(criteria["amenity_keyword"])
+        if criteria.get("room_keyword"):
+            pieces.append(f"hạng phòng {criteria['room_keyword']}")
+        if criteria.get("min_area_sqm"):
+            pieces.append(f"diện tích trên {criteria['min_area_sqm']}m2")
+        elif criteria.get("max_area_sqm"):
+            pieces.append(f"diện tích dưới {criteria['max_area_sqm']}m2")
+        elif criteria.get("sort") == "largest":
+            pieces.append("diện tích lớn")
+        if criteria.get("sort") == "cheapest":
+            pieces.append("giá thấp hơn")
+        elif criteria.get("sort") == "premium":
+            pieces.append("cao cấp hơn")
+        return ", ".join(pieces)
+
     def _format_room_answer(
         self,
         availability: Dict[str, Any],
@@ -1137,6 +1512,8 @@ class VinpearlRoomAgent:
         guests = availability.get("guests") or 2
         options = display_options or availability["options"][:ROOM_PAGE_SIZE]
         follow_up = follow_up or {"type": "new_search"}
+        criteria = follow_up.get("criteria", {})
+        criteria_summary = self._criteria_summary(criteria)
 
         if follow_up["type"] == "more":
             opening = (
@@ -1145,7 +1522,7 @@ class VinpearlRoomAgent:
                 f"từ {checkin} đến {checkout} ({availability['nights']} đêm)."
             )
         elif follow_up["type"] == "refine":
-            if follow_up.get("criteria", {}).get("recommendation") == "moderate_budget":
+            if criteria.get("recommendation") == "moderate_budget":
                 opening = (
                     f"Với tiêu chí tài chính vừa, mình khuyên ưu tiên "
                     f"{options[0]['room_name']} tại {hotel['hotel_name']} "
@@ -1153,25 +1530,32 @@ class VinpearlRoomAgent:
                     f"đến {checkout} ({availability['nights']} đêm). Đây là lựa chọn "
                     "cân bằng giữa tổng giá, diện tích và sức chứa so với các phòng đang có."
                 )
-            elif "min_area_sqm" in follow_up.get("criteria", {}):
+            elif "min_area_sqm" in criteria:
                 opening = (
                     f"Mình lọc được {len(options)} lựa chọn có diện tích trên "
-                    f"{follow_up['criteria']['min_area_sqm']}m2 tại {hotel['hotel_name']} "
+                    f"{criteria['min_area_sqm']}m2 tại {hotel['hotel_name']} "
                     f"({hotel['address']}) cho {guests} khách, từ {checkin} "
                     f"đến {checkout} ({availability['nights']} đêm)."
                 )
-            elif "max_area_sqm" in follow_up.get("criteria", {}):
+            elif "max_area_sqm" in criteria:
                 opening = (
                     f"Mình lọc được {len(options)} lựa chọn có diện tích dưới "
-                    f"{follow_up['criteria']['max_area_sqm']}m2 tại {hotel['hotel_name']} "
+                    f"{criteria['max_area_sqm']}m2 tại {hotel['hotel_name']} "
                     f"({hotel['address']}) cho {guests} khách, từ {checkin} "
                     f"đến {checkout} ({availability['nights']} đêm)."
                 )
-            elif follow_up.get("criteria", {}).get("recommendation"):
+            elif criteria.get("recommendation"):
                 opening = (
                     f"Mình gợi ý {options[0]['room_name']} là lựa chọn phù hợp để ưu tiên tại "
                     f"{hotel['hotel_name']} ({hotel['address']}) cho {guests} khách, "
                     f"từ {checkin} đến {checkout} ({availability['nights']} đêm)."
+                )
+            elif criteria_summary:
+                opening = (
+                    f"Mình lọc lại được {len(options)} lựa chọn theo tiêu chí "
+                    f"{criteria_summary} tại {hotel['hotel_name']} ({hotel['address']}) "
+                    f"cho {guests} khách, từ {checkin} đến {checkout} "
+                    f"({availability['nights']} đêm)."
                 )
             else:
                 opening = (
@@ -1301,11 +1685,13 @@ class VinpearlRoomAgent:
             return (
                 f"Mình chưa thấy lựa chọn phòng khác tại {hotel_name} ({address}) "
                 "ngoài các phòng đã hiển thị cho ngày và số khách hiện tại. "
-                "Bạn có thể đổi ngày, đổi số khách hoặc chọn cơ sở Vinpearl khác."
+                "Bạn có thể đổi ngày, đổi số khách hoặc chọn cơ sở Vinpearl khác. "
+                f"Nếu cần tư vấn ngoài dữ liệu demo, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
             )
         return (
             f"Mình chưa tìm thấy phòng phù hợp hơn tại {hotel_name} ({address}) "
-            "theo tiêu chí vừa nhập. Bạn có thể nới ngân sách, đổi ngày hoặc chọn tiêu chí khác."
+            "theo tiêu chí vừa nhập. Bạn có thể nới ngân sách, đổi ngày hoặc chọn tiêu chí khác. "
+            f"Nếu cần tư vấn ngoài dữ liệu demo, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
         )
 
     @staticmethod

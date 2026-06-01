@@ -20,6 +20,32 @@ class FakeOpenAILLM:
         }
 
 
+class FakeFollowUpCriteriaLLM:
+    model_name = "fake-openai-model"
+
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, prompt, system_prompt=None):
+        self.calls.append({"prompt": prompt, "system_prompt": system_prompt or ""})
+        if "follow-up" in (system_prompt or ""):
+            content = (
+                '{"type":"refine","criteria":{"bed_keywords":["king"],'
+                '"amenity_keywords":["buffet"],"sort":"largest"}}'
+            )
+        else:
+            content = (
+                '{"intent":"room_search","location_query":null,'
+                '"checkin":null,"checkout":null,"guests":null}'
+            )
+        return {
+            "content": content,
+            "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18},
+            "latency_ms": 1,
+            "provider": "openai",
+        }
+
+
 def test_rejects_out_of_scope_question():
     agent = VinpearlRoomAgent()
 
@@ -27,6 +53,7 @@ def test_rejects_out_of_scope_question():
 
     assert result["status"] == "out_of_scope"
     assert not result["room_cards"]
+    assert "1900 56 56 56" in result["answer"]
 
 
 def test_requires_vinpearl_location_before_searching_rooms():
@@ -138,6 +165,55 @@ def test_follow_up_can_change_checkout_by_day_number():
     assert changed["status"] == "ok"
     assert changed["summary"]["checkout"] == "2026-06-18"
     assert "18/06/2026" in changed["answer"]
+
+
+def test_follow_up_filters_multiple_room_criteria():
+    agent = VinpearlRoomAgent()
+    first = agent.respond(
+        "Tim phong Vinpearl Golf Nha Trang tu 03/06 den 05/06 cho 2 nguoi"
+    )
+
+    filtered = agent.respond(
+        "toi can phong co giuong King, va co buffet sang, dien tich phong lon",
+        first["context"],
+    )
+
+    assert filtered["status"] == "ok"
+    assert [room["room_code"] for room in filtered["room_cards"]] == ["SUITE", "PREMIER"]
+    assert all(
+        "king" in " ".join(room["bed_options"]).lower()
+        for room in filtered["room_cards"]
+    )
+
+
+def test_follow_up_without_matching_data_points_to_hotline():
+    agent = VinpearlRoomAgent()
+    first = agent.respond(
+        "Tim phong Vinpearl Golf Nha Trang tu 03/06 den 05/06 cho 2 nguoi"
+    )
+
+    filtered = agent.respond("toi can phong tren 999m2", first["context"])
+
+    assert filtered["status"] == "no_more_rooms"
+    assert not filtered["room_cards"]
+    assert "1900 56 56 56" in filtered["answer"]
+
+
+def test_openai_follow_up_criteria_are_used_when_configured():
+    llm = FakeFollowUpCriteriaLLM()
+    agent = VinpearlRoomAgent(llm=llm)
+    first = agent.respond(
+        "Tim phong Vinpearl Golf Nha Trang tu 03/06 den 05/06 cho 2 nguoi"
+    )
+
+    filtered = agent.respond(
+        "toi can phong co giuong King, va co buffet sang, dien tich phong lon",
+        first["context"],
+    )
+
+    assert any("follow-up" in call["system_prompt"] for call in llm.calls)
+    assert "openai_extract_follow_up_criteria" in filtered["trace_text"]
+    assert [room["room_code"] for room in filtered["room_cards"]] == ["SUITE", "PREMIER"]
 
 
 def test_follow_up_moderate_budget_recommends_midrange_room():
