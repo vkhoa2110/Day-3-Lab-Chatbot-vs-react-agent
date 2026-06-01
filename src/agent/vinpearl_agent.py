@@ -524,6 +524,10 @@ class VinpearlRoomAgent:
         ):
             return {"type": "new_search"}
 
+        criteria = self._extract_option_criteria(message)
+        if criteria:
+            return {"type": "refine", "criteria": criteria}
+
         detail_terms = (
             "chi tiet",
             "ro hon",
@@ -543,7 +547,6 @@ class VinpearlRoomAgent:
         if any(term in normalized for term in detail_terms):
             return {"type": "details"}
 
-        criteria = self._extract_option_criteria(message)
         more_terms = (
             "khac",
             "them",
@@ -555,8 +558,8 @@ class VinpearlRoomAgent:
             "option khac",
             "lua chon khac",
         )
-        if criteria or any(term in normalized for term in more_terms):
-            return {"type": "refine" if criteria else "more", "criteria": criteria}
+        if any(term in normalized for term in more_terms):
+            return {"type": "more", "criteria": {}}
 
         return {"type": "new_search"}
 
@@ -586,6 +589,10 @@ class VinpearlRoomAgent:
             criteria["sort"] = "premium"
         if any(term in normalized for term in ("rong hon", "dien tich lon", "lon hon")):
             criteria["sort"] = "largest"
+        area_criteria = self._extract_area_criteria(normalized)
+        if area_criteria:
+            criteria.update(area_criteria)
+            criteria.setdefault("sort", "largest")
         if "villa" in normalized:
             criteria["room_keyword"] = "villa"
         if any(term in normalized for term in ("family", "gia dinh")):
@@ -598,6 +605,30 @@ class VinpearlRoomAgent:
         budget = self._extract_budget_vnd(normalized)
         if budget:
             criteria["budget_min_vnd"], criteria["budget_max_vnd"] = budget
+        return criteria
+
+    @staticmethod
+    def _extract_area_criteria(normalized: str) -> Dict[str, int]:
+        criteria: Dict[str, int] = {}
+        min_patterns = [
+            r"(?:tren|lon hon|rong hon|toi thieu|it nhat|tu)\s*(\d{2,4})\s*m2",
+            r"(?<!nho )(?<!be )hon\s*(\d{2,4})\s*m2",
+            r"(\d{2,4})\s*m2\s*(?:tro len|do len|up)",
+        ]
+        max_patterns = [
+            r"(?:duoi|nho hon|be hon|toi da|khong qua)\s*(\d{2,4})\s*m2",
+            r"(\d{2,4})\s*m2\s*(?:tro xuong|do xuong)",
+        ]
+        for pattern in min_patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                criteria["min_area_sqm"] = int(match.group(1))
+                break
+        for pattern in max_patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                criteria["max_area_sqm"] = int(match.group(1))
+                break
         return criteria
 
     def _extract_relative_date_update(
@@ -731,6 +762,18 @@ class VinpearlRoomAgent:
                 room
                 for room in filtered
                 if criteria["budget_min_vnd"] <= room["total_vnd"] <= criteria["budget_max_vnd"]
+            ]
+        if "min_area_sqm" in criteria:
+            filtered = [
+                room
+                for room in filtered
+                if room["area_sqm"] > criteria["min_area_sqm"]
+            ]
+        if "max_area_sqm" in criteria:
+            filtered = [
+                room
+                for room in filtered
+                if room["area_sqm"] < criteria["max_area_sqm"]
             ]
         if criteria.get("sort") == "cheapest" and any(
             term in normalized for term in ("re hon", "gia re hon", "thap hon")
@@ -1109,6 +1152,20 @@ class VinpearlRoomAgent:
                     f"({hotel['address']}) cho {guests} khách, từ {checkin} "
                     f"đến {checkout} ({availability['nights']} đêm). Đây là lựa chọn "
                     "cân bằng giữa tổng giá, diện tích và sức chứa so với các phòng đang có."
+                )
+            elif "min_area_sqm" in follow_up.get("criteria", {}):
+                opening = (
+                    f"Mình lọc được {len(options)} lựa chọn có diện tích trên "
+                    f"{follow_up['criteria']['min_area_sqm']}m2 tại {hotel['hotel_name']} "
+                    f"({hotel['address']}) cho {guests} khách, từ {checkin} "
+                    f"đến {checkout} ({availability['nights']} đêm)."
+                )
+            elif "max_area_sqm" in follow_up.get("criteria", {}):
+                opening = (
+                    f"Mình lọc được {len(options)} lựa chọn có diện tích dưới "
+                    f"{follow_up['criteria']['max_area_sqm']}m2 tại {hotel['hotel_name']} "
+                    f"({hotel['address']}) cho {guests} khách, từ {checkin} "
+                    f"đến {checkout} ({availability['nights']} đêm)."
                 )
             elif follow_up.get("criteria", {}).get("recommendation"):
                 opening = (
