@@ -374,6 +374,15 @@ INDEX_HTML = """<!doctype html>
     .secondary { background: #eef2f5; color: #26323c; }
     .primary:disabled { opacity: 0.55; cursor: wait; }
 
+    .sidebar-search {
+      width: 100%;
+      margin-top: 2px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
     .empty {
       max-width: 760px;
       margin: auto;
@@ -436,6 +445,7 @@ INDEX_HTML = """<!doctype html>
           <label for="guestsInput">Số khách</label>
           <input id="guestsInput" type="number" min="1" max="12" value="2">
         </div>
+        <button class="primary sidebar-search" id="sidebarSearchButton" type="button">Tìm phòng</button>
       </section>
 
       <section>
@@ -475,6 +485,7 @@ INDEX_HTML = """<!doctype html>
     const emptyState = document.getElementById("emptyState");
     const statusText = document.getElementById("statusText");
     const sendButton = document.getElementById("sendButton");
+    const sidebarSearchButton = document.getElementById("sidebarSearchButton");
     const clearButton = document.getElementById("clearButton");
     const messageInput = document.getElementById("messageInput");
     const hotelSelect = document.getElementById("hotelSelect");
@@ -511,6 +522,24 @@ INDEX_HTML = """<!doctype html>
         checkout: checkoutInput.value || chatContext.checkout,
         guests: Number(guestsInput.value || chatContext.guests || 2)
       };
+    }
+
+    function formatDateForMessage(value) {
+      if (!value) return "";
+      const [year, month, day] = value.split("-");
+      return `${day}/${month}/${year}`;
+    }
+
+    function buildSearchMessage(context) {
+      const hotel = selectedHotel();
+      const location = context.location || (hotel ? hotel.label : "");
+      const parts = ["Tim phong Vinpearl"];
+      if (location) parts.push(`tai ${location}`);
+      if (context.checkin && context.checkout) {
+        parts.push(`tu ${formatDateForMessage(context.checkin)} den ${formatDateForMessage(context.checkout)}`);
+      }
+      if (context.guests) parts.push(`cho ${context.guests} khach`);
+      return parts.join(" ");
     }
 
     function applyContext(context) {
@@ -614,6 +643,7 @@ INDEX_HTML = """<!doctype html>
       addMessage("user", message || fallbackMessage);
       messageInput.value = "";
       sendButton.disabled = true;
+      sidebarSearchButton.disabled = true;
       statusText.textContent = "Đang xử lý";
 
       try {
@@ -629,9 +659,23 @@ INDEX_HTML = """<!doctype html>
         addMessage("assistant", "Không gọi được agent nội bộ. Vui lòng kiểm tra server.");
       } finally {
         sendButton.disabled = false;
+        sidebarSearchButton.disabled = false;
         statusText.textContent = "Sẵn sàng";
         messageInput.focus();
       }
+    }
+
+    function sendSidebarSearch() {
+      const context = collectContext();
+      if (!context.location && !context.hotel_id) {
+        addMessage("assistant", "Vui long chon hoac nhap co so Vinpearl truoc khi tim phong.");
+        return;
+      }
+      if (!context.checkin || !context.checkout) {
+        addMessage("assistant", "Vui long chon ngay nhan phong va ngay tra phong.");
+        return;
+      }
+      sendMessage(buildSearchMessage(context));
     }
 
     async function loadLocations() {
@@ -671,6 +715,7 @@ INDEX_HTML = """<!doctype html>
     });
 
     sendButton.addEventListener("click", () => sendMessage());
+    sidebarSearchButton.addEventListener("click", () => sendSidebarSearch());
     clearButton.addEventListener("click", () => {
       messagesEl.innerHTML = "";
       messagesEl.appendChild(emptyState);
