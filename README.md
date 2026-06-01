@@ -78,6 +78,7 @@ Agent behavior:
 - Asks the user to choose a specific property if the location is ambiguous, e.g. only "Phu Quoc".
 - Checks room availability by check-in/check-out dates and guest count.
 - Returns available room cards with price, capacity, bed options, meal plan, cancellation policy, amenities, and demo promotions.
+- Supports follow-up questions from the latest search, such as asking for other rooms, cheaper/larger options, meal details, cancellation policy, or "details for room 2".
 - Refuses unrelated questions and keeps the response inside the room-search domain.
 - Exposes the lab format in each response:
 
