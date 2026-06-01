@@ -51,6 +51,43 @@ The code is designed as a **Production Prototype**. It includes:
 - **Robust Provider Pattern**: Easily extendable to any LLM API.
 - **Clean Skeletons**: Focus on the logic that matters—the agent's reasoning process.
 
+## Vinpearl Room Agent Demo
+
+This repo now includes a focused Vinpearl room-availability agent backed by:
+
+- `data/vinpearl_nationwide_agent_demo_dataset.json`
+- `src/tools/vinpearl_tools.py`
+- `src/agent/vinpearl_agent.py`
+- `src/web_app.py`
+
+Run the web UI:
+
+```bash
+python src/web_app.py --host 127.0.0.1 --port 8765
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765
+```
+
+Agent behavior:
+
+- Requires a Vinpearl property/address before checking rooms.
+- Asks the user to choose a specific property if the location is ambiguous, e.g. only "Phu Quoc".
+- Checks room availability by check-in/check-out dates and guest count.
+- Returns available room cards with price, capacity, bed options, meal plan, cancellation policy, amenities, and demo promotions.
+- Refuses unrelated questions and keeps the response inside the room-search domain.
+- Exposes the lab format in each response:
+
+```text
+Thought: ...
+Action: ...
+Observation: ...
+Final Answer: ...
+```
+
 ---
 
 *Happy Coding! Let's build agents that actually work.*
