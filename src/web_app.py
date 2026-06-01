@@ -22,7 +22,7 @@ except ModuleNotFoundError:
 
 def build_agent() -> VinpearlRoomAgent:
     if load_dotenv:
-        load_dotenv(PROJECT_ROOT / ".env")
+        load_dotenv(PROJECT_ROOT / ".env", override=True)
 
     provider = os.getenv("DEFAULT_PROVIDER", "openai").lower()
     model_name = os.getenv("DEFAULT_MODEL", "gpt-4o")
