@@ -1,4 +1,6 @@
 .env
+venv/
+.venv/
 logs/
 __pycache__/
 *.log
@@ -6,4 +8,4 @@ __pycache__/
 models/
 data/
 .vscode/
-
+.env.example

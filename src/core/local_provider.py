@@ -9,15 +9,29 @@ class LocalProvider(LLMProvider):
     LLM Provider for local models using llama-cpp-python.
     Optimized for CPU usage with GGUF models.
     """
-    def __init__(self, model_path: str, n_ctx: int = 4096, n_threads: Optional[int] = None):
+    def __init__(
+        self,
+        model_path: str,
+        n_ctx: int = 4096,
+        n_threads: Optional[int] = None,
+        max_tokens: int = 512,
+        n_gpu_layers: int = -1,
+        n_batch: int = 512,
+        main_gpu: int = 0,
+    ):
         """
         Initialize the local Llama model.
         Args:
             model_path: Path to the .gguf model file.
             n_ctx: Context window size.
             n_threads: Number of CPU threads to use. Defaults to all available.
+            max_tokens: Maximum number of tokens to generate.
+            n_gpu_layers: Number of layers to offload to GPU. -1 means offload all possible layers.
+            n_batch: Prompt processing batch size.
+            main_gpu: CUDA GPU index.
         """
         super().__init__(model_name=os.path.basename(model_path))
+        self.max_tokens = max_tokens
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found at {model_path}. Please download it first.")
@@ -27,6 +41,9 @@ class LocalProvider(LLMProvider):
             model_path=model_path,
             n_ctx=n_ctx,
             n_threads=n_threads,
+            n_gpu_layers=n_gpu_layers,
+            n_batch=n_batch,
+            main_gpu=main_gpu,
             verbose=False
         )
 
@@ -42,7 +59,7 @@ class LocalProvider(LLMProvider):
 
         response = self.llm(
             full_prompt,
-            max_tokens=1024,
+            max_tokens=self.max_tokens,
             stop=["<|end|>", "Observation:"],
             echo=False
         )
@@ -73,7 +90,7 @@ class LocalProvider(LLMProvider):
 
         stream = self.llm(
             full_prompt,
-            max_tokens=1024,
+            max_tokens=self.max_tokens,
             stop=["<|end|>", "Observation:"],
             stream=True
         )
