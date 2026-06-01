@@ -416,7 +416,7 @@ INDEX_HTML = """<!doctype html>
         <div class="brand-mark">VP</div>
         <div>
           <h1>Vinpearl Room Agent</h1>
-          <p class="subtle">Dataset demo 01/06/2026-31/08/2026</p>
+          <p class="subtle">Dữ liệu phòng 01/06/2026-31/08/2026</p>
         </div>
       </div>
 
@@ -458,7 +458,7 @@ INDEX_HTML = """<!doctype html>
       <header class="topbar">
         <div>
           <strong>Tìm phòng trống Vinpearl</strong>
-          <p class="subtle">Chỉ trả lời các yêu cầu về phòng trống trong dataset demo.</p>
+          <p class="subtle">Hỗ trợ tra cứu phòng trống, giá và thông tin phòng tại Vinpearl.</p>
         </div>
         <div class="status"><span class="dot"></span><span id="statusText">Sẵn sàng</span></div>
       </header>
@@ -533,12 +533,12 @@ INDEX_HTML = """<!doctype html>
     function buildSearchMessage(context) {
       const hotel = selectedHotel();
       const location = context.location || (hotel ? hotel.label : "");
-      const parts = ["Tim phong Vinpearl"];
-      if (location) parts.push(`tai ${location}`);
+      const parts = ["Tìm phòng Vinpearl"];
+      if (location) parts.push(`tại ${location}`);
       if (context.checkin && context.checkout) {
-        parts.push(`tu ${formatDateForMessage(context.checkin)} den ${formatDateForMessage(context.checkout)}`);
+        parts.push(`từ ${formatDateForMessage(context.checkin)} đến ${formatDateForMessage(context.checkout)}`);
       }
-      if (context.guests) parts.push(`cho ${context.guests} khach`);
+      if (context.guests) parts.push(`cho ${context.guests} khách`);
       return parts.join(" ");
     }
 
@@ -668,11 +668,11 @@ INDEX_HTML = """<!doctype html>
     function sendSidebarSearch() {
       const context = collectContext();
       if (!context.location && !context.hotel_id) {
-        addMessage("assistant", "Vui long chon hoac nhap co so Vinpearl truoc khi tim phong.");
+        addMessage("assistant", "Vui lòng chọn hoặc nhập cơ sở Vinpearl trước khi tìm phòng.");
         return;
       }
       if (!context.checkin || !context.checkout) {
-        addMessage("assistant", "Vui long chon ngay nhan phong va ngay tra phong.");
+        addMessage("assistant", "Vui lòng chọn ngày nhận phòng và ngày trả phòng.");
         return;
       }
       sendMessage(buildSearchMessage(context));

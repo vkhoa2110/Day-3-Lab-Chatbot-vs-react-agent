@@ -156,7 +156,7 @@ class VinpearlRoomAgent:
         if not in_scope:
             answer = (
                 "Mình chỉ hỗ trợ tìm phòng trống tại các cơ sở Vinpearl trong "
-                "dataset demo. Vui lòng gửi địa chỉ/cơ sở Vinpearl, ngày nhận "
+                "hệ thống hiện tại. Vui lòng gửi địa chỉ/cơ sở Vinpearl, ngày nhận "
                 "phòng, ngày trả phòng và số khách."
             )
             answer += " " + self._hotline_note()
@@ -258,7 +258,7 @@ class VinpearlRoomAgent:
             answer = (
                 f"Mình đã xác định cơ sở {hotel['hotel_name']} ({hotel['address']}). "
                 "Vui lòng cung cấp ngày nhận phòng và ngày trả phòng để mình kiểm tra "
-                f"tồn phòng. Dataset demo có dữ liệu từ {self.kb.min_date.strftime('%d/%m/%Y')} "
+                f"tồn phòng. Bạn có thể chọn ngày từ {self.kb.min_date.strftime('%d/%m/%Y')} "
                 f"đến {self.kb.max_date.strftime('%d/%m/%Y')}."
             )
             return finish(
@@ -350,7 +350,7 @@ class VinpearlRoomAgent:
         if follow_up["type"] == "out_of_scope":
             answer = (
                 "Mình chỉ hỗ trợ các câu hỏi về tìm phòng trống và thông tin phòng "
-                "trong dataset demo Vinpearl."
+                "tại Vinpearl."
             )
             answer += " " + self._hotline_note()
             return finish(answer, trace, context=context, status="out_of_scope")
@@ -1365,7 +1365,7 @@ class VinpearlRoomAgent:
 
     @staticmethod
     def _hotline_note() -> str:
-        return f"Nếu cần tư vấn ngoài dữ liệu demo, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
+        return f"Nếu cần tư vấn thêm, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
 
     @staticmethod
     def _context_for_log(context: Dict[str, Any]) -> Dict[str, Any]:
@@ -1596,8 +1596,7 @@ class VinpearlRoomAgent:
             )
 
         lines.append(
-            "Lưu ý: đây là dữ liệu giả lập phục vụ demo/đào tạo, không phải giá "
-            "và tồn phòng thực tế của Vinpearl."
+            "Lưu ý: giá và tình trạng phòng có thể thay đổi theo thời điểm xác nhận."
         )
         return "\n".join(lines)
 
@@ -1622,7 +1621,7 @@ class VinpearlRoomAgent:
                 f"- Tổng giá: {format_vnd(room['total_vnd'])}; giá gốc {format_vnd(room['gross_total_vnd'])}; ưu đãi {promotions}.",
                 f"- Chính sách hủy: {room['cancellation_policy']} - {room['cancellation_detail']}",
                 f"- Tiện ích: {amenities}.",
-                "Lưu ý: đây là dữ liệu demo, không phải giá và tồn phòng thực tế của Vinpearl.",
+                "Lưu ý: giá và tình trạng phòng có thể thay đổi theo thời điểm xác nhận.",
             ]
         )
 
@@ -1686,12 +1685,12 @@ class VinpearlRoomAgent:
                 f"Mình chưa thấy lựa chọn phòng khác tại {hotel_name} ({address}) "
                 "ngoài các phòng đã hiển thị cho ngày và số khách hiện tại. "
                 "Bạn có thể đổi ngày, đổi số khách hoặc chọn cơ sở Vinpearl khác. "
-                f"Nếu cần tư vấn ngoài dữ liệu demo, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
+                f"Nếu cần tư vấn thêm, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
             )
         return (
             f"Mình chưa tìm thấy phòng phù hợp hơn tại {hotel_name} ({address}) "
             "theo tiêu chí vừa nhập. Bạn có thể nới ngân sách, đổi ngày hoặc chọn tiêu chí khác. "
-            f"Nếu cần tư vấn ngoài dữ liệu demo, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
+            f"Nếu cần tư vấn thêm, vui lòng liên hệ hotline {SUPPORT_HOTLINE}."
         )
 
     @staticmethod
