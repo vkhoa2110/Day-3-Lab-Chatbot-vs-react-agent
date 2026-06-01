@@ -7,27 +7,64 @@
   - Lê Quang Hưng - 2A202600891
 - **Deployment Date**: 2026-06-01
 - **Repository Branches**: `main`, `Khoa`
+- **Final Test Command**: `python -m pytest -q`
+- **Final Test Result**: `20 passed`
 
 ---
 
 ## 1. Executive Summary
 
-The team built a domain-specific ReAct-style agent for Vinpearl room availability. The system answers only room-search questions, requires a Vinpearl property/address before checking inventory, supports natural-language follow-up questions, and refuses unrelated questions with a hotline handoff.
+The team built a domain-specific ReAct-style agent for Vinpearl room availability. The agent only answers room-search questions, requires a Vinpearl property or address before checking inventory, supports multi-turn follow-up questions, and refuses unrelated requests with a hotline handoff.
 
-The core design is intentionally not a free-form chatbot. The LLM is used for intent and parameter extraction, while room availability, prices, bed options, meal plans, policies, and promotions are retrieved from structured data and validated by code. This reduces hallucination risk for high-precision fields such as room price and availability.
+The main design decision is to separate language understanding from factual booking data:
 
-- **Automated Test Success Rate**: 17/17 tests passed.
-- **Observed Runtime QA Logs**: 464 `VINPEARL_QA` events in `logs/2026-06-01.log`.
-- **OpenAI Runtime Calls**: 57 successful real OpenAI extraction calls in the observed log, excluding fake unit-test calls.
-- **Key Outcome**: Agent v2 correctly handles multi-turn refinement such as "phòng trên 80m2", "giường King + buffet sáng + phòng lớn", and "phòng khác không?", which a plain chatbot baseline can easily answer with repeated or hallucinated content.
+```text
+LLM = intent and criteria extraction
+Tools / dataset = source of truth
+Code filters = final room decision
+Formatter = final user answer
+```
+
+This prevents the LLM from inventing room names, prices, policies, availability, or promotions.
+
+Key outcome:
+
+- The chatbot baseline can produce fluent but unreliable answers for room availability.
+- Agent v1 introduced ReAct trace, location lookup, and availability tools.
+- Agent v2 fixed follow-up failures, added LLM-based criteria extraction, deterministic filtering, guardrails, token tracking, and cost estimation.
 
 ---
 
-## 2. System Architecture & Tooling
+## 2. Rubric Coverage Map
 
-### 2.1 ReAct Loop Implementation
+### 2.1 Base Group Score: 45 Points
 
-The Vinpearl agent uses a domain-specific ReAct loop implemented in `src/agent/vinpearl_agent.py`.
+| Scoring Category | Points | Evidence in This Project |
+| :--- | ---: | :--- |
+| Chatbot Baseline | 2 | Baseline behavior is documented in ablation tables: direct chatbot-style answering is compared against the tool-backed agent and shown to be unreliable for structured booking data. |
+| Agent v1 Working | 7 | `src/agent/vinpearl_agent.py` implements a ReAct-style flow with `Thought -> Action -> Observation -> Final Answer`; it uses multiple tools: location resolution, room availability, follow-up classification/filtering. |
+| Agent v2 Improved | 7 | v2 addresses failures from v1: area filters, compound follow-up criteria, no-data hotline, OpenAI auth fallback, UI copy cleanup, and token/cost telemetry. |
+| Tool Design Evolution | 4 | Tool responsibilities evolved from basic room search to location disambiguation, availability checking, structured criteria extraction, deterministic filtering, and telemetry aggregation. |
+| Trace Quality | 9 | UI and logs expose successful and failed traces, including OpenAI extraction, fallback parser, availability checks, follow-up filters, and final answer. |
+| Evaluation & Analysis | 7 | Runtime logs and automated tests are used for analysis: 572 `VINPEARL_QA` events, 57 real OpenAI extraction calls, status distribution, token totals, latency, and 20 automated tests. |
+| Flowchart & Insight | 5 | The architecture flowchart below documents the ReAct logic. Group learning points explain why tool-backed agents are more reliable than free-form chatbots for booking workflows. |
+| Code Quality | 4 | Code is modular by provider, tool, agent, telemetry, UI, and tests. OpenAI errors are sanitized, `.env` loading is controlled, and deterministic filters protect factual output. |
+
+### 2.2 Bonus Coverage: Max +15
+
+| Bonus Category | Points | Status / Evidence |
+| :--- | ---: | :--- |
+| Extra Monitoring | +3 | Implemented token usage and estimated cost telemetry: `usage`, `cost`, `llm_metrics`, UI metric pills, and cost override env vars. |
+| Extra Tools | +2 | Implemented structured Vinpearl knowledge-base tools for location search, hotel resolution, availability, room-card generation, and follow-up filtering. |
+| Failure Handling | +3 | OpenAI auth failures are sanitized and fall back to internal parsing; out-of-scope/no-data/ambiguous-location cases return controlled messages and hotline handoff. |
+| Live System Demo | +5 | The web UI can be run locally with `python src/web_app.py --host 127.0.0.1 --port 8765`; this portion depends on the live class presentation. |
+| Ablation Experiments | +2 | Report includes Chatbot vs Agent, Agent v1 vs Agent v2, and Rule Parser vs LLM Criteria Extractor comparisons. |
+
+---
+
+## 3. System Architecture & Tooling
+
+### 3.1 ReAct Loop Implementation
 
 ```mermaid
 flowchart TD
@@ -43,12 +80,12 @@ flowchart TD
     J -->|Yes| K[OpenAI extracts follow-up criteria]
     J -->|No| L[Initial room list]
     K --> M[Code filters rooms by criteria]
-    L --> N[Format answer + cards]
+    L --> N[Format answer + room cards]
     M --> N
-    N --> O[Trace + telemetry logs]
+    N --> O[Trace + telemetry logs + UI metrics]
 ```
 
-Each response exposes a trace in the format:
+Each response exposes:
 
 ```text
 Thought: ...
@@ -57,33 +94,32 @@ Observation: ...
 Final Answer: ...
 ```
 
-This makes the reasoning path inspectable in the UI and in logs.
+### 3.2 Tool Definitions and Evolution
 
-### 2.2 Tool Definitions
+| Version | Tool / Module | Input Format | Output | Use Case |
+| :--- | :--- | :--- | :--- | :--- |
+| v1 | `VinpearlKnowledgeBase.find_locations` | `keyword: str` | matched Vinpearl properties | Find candidate hotels from user text or region. |
+| v1 | `VinpearlKnowledgeBase.resolve_hotel` | `keyword: str` | found / missing / ambiguous | Decide whether a property is specific enough. |
+| v1 | `VinpearlKnowledgeBase.check_room_availability` | `hotel_id`, `checkin`, `checkout`, `guests` | available room options | Validate date range, capacity, inventory, rates, promotions, and policies. |
+| v2 | `_extract_request_with_llm` | message + context + known locations | JSON request fields | Extract `intent`, `location_query`, `checkin`, `checkout`, `guests`. |
+| v2 | `_extract_follow_up_with_llm` | follow-up message + current room options | JSON criteria | Extract bed, breakfast, area, budget, recommendation, and sort criteria. |
+| v2 | `_select_options_for_response` | room options + criteria | filtered/sorted rooms | Ensure final room list comes from data, not LLM hallucination. |
+| v2 | `_llm_metrics_from_trace` | ReAct trace observations | aggregate token/cost metrics | Summarize LLM usage and estimated cost for UI and logs. |
 
-| Tool / Module | Input Format | Output | Use Case |
-| :--- | :--- | :--- | :--- |
-| `VinpearlKnowledgeBase.find_locations` | `keyword: str` | matched Vinpearl properties | Find candidate hotels from user text or region. |
-| `VinpearlKnowledgeBase.resolve_hotel` | `keyword: str` | found / missing / ambiguous | Decide whether the user provided a specific enough property. |
-| `VinpearlKnowledgeBase.check_room_availability` | `hotel_id`, `checkin`, `checkout`, `guests` | available room options | Validate date range, room capacity, inventory, rates, promotions, policies. |
-| `_extract_request_with_llm` | user message + context + known locations | JSON request fields | Extract `intent`, `location_query`, `checkin`, `checkout`, `guests`. |
-| `_extract_follow_up_with_llm` | follow-up message + current room options | JSON criteria | Extract filters such as bed type, breakfast, area, budget, sort mode. |
-| `_select_options_for_response` | available rooms + criteria | filtered rooms | Apply deterministic filters so LLM cannot invent room data. |
-
-The main structured data source is:
+Main structured data source:
 
 ```text
 data/vinpearl_nationwide_agent_demo_dataset.json
 ```
 
-### 2.3 LLM Providers Used
+### 3.3 LLM Providers Used
 
 - **Primary**: OpenAI `gpt-4o`
 - **Provider wrapper**: `src/core/openai_provider.py`
-- **Fallback**: deterministic parser and rule-based filtering if OpenAI is unavailable.
-- **Local provider support**: `src/core/local_provider.py` exists for local models, but the Vinpearl web app primarily uses OpenAI via `.env`.
+- **Fallback**: deterministic parser and rule-based filtering when OpenAI is unavailable.
+- **Local provider support**: `src/core/local_provider.py` remains available for local GGUF models.
 
-Current OpenAI invocation pattern:
+Current OpenAI call:
 
 ```python
 response = self.client.chat.completions.create(
@@ -102,7 +138,7 @@ response_format={"type": "json_object"}
 
 ---
 
-## 3. Telemetry & Performance Dashboard
+## 4. Telemetry & Performance Dashboard
 
 Telemetry is written as JSON lines to:
 
@@ -119,7 +155,8 @@ Key event types:
 | `OPENAI_EXTRACT_REQUEST_FAILED` | Failed OpenAI booking extraction. |
 | `OPENAI_EXTRACT_FOLLOW_UP` | Successful OpenAI follow-up extraction. |
 | `OPENAI_EXTRACT_FOLLOW_UP_FAILED` | Failed OpenAI follow-up extraction. |
-| `VINPEARL_QA` | Stores question, answer, status, room cards, and summary. |
+| `LLM_METRIC` | Provider/model/tokens/latency/cost for OpenAI calls. |
+| `VINPEARL_QA` | Stores question, answer, status, summary, room cards, and `llm_metrics`. |
 
 Observed metrics from `logs/2026-06-01.log`, excluding fake unit-test LLM calls:
 
@@ -135,58 +172,79 @@ Observed metrics from `logs/2026-06-01.log`, excluding fake unit-test LLM calls:
 | Average prompt tokens per LLM call | 1,772.9 |
 | Average completion tokens per LLM call | 49.1 |
 | Total observed LLM tokens | 103,851 |
+| Estimated cost for observed real OpenAI calls | $0.280605 |
 
-The current implementation also records estimated USD cost for every OpenAI call. The fields are stored as `cost.input_cost_usd`, `cost.output_cost_usd`, and `cost.total_cost_usd`, then aggregated into `llm_metrics` for each `VINPEARL_QA` response. The estimate can be overridden with `OPENAI_INPUT_COST_PER_1M_TOKENS` and `OPENAI_OUTPUT_COST_PER_1M_TOKENS`.
+Cost estimate formula for `gpt-4o`:
+
+```text
+estimated_cost =
+  prompt_tokens / 1,000,000 * 2.50
++ completion_tokens / 1,000,000 * 10.00
+```
+
+The rates can be overridden with:
+
+```env
+OPENAI_INPUT_COST_PER_1M_TOKENS=2.50
+OPENAI_OUTPUT_COST_PER_1M_TOKENS=10.00
+```
 
 Observed QA status distribution:
 
 | Status | Count |
 | :--- | ---: |
-| `ok` | 361 |
-| `no_more_rooms` | 31 |
-| `out_of_scope` | 27 |
-| `ambiguous_location` | 21 |
-| `missing_location` | 18 |
-| `no_rooms` | 3 |
+| `ok` | 449 |
+| `no_more_rooms` | 39 |
+| `out_of_scope` | 31 |
+| `ambiguous_location` | 25 |
+| `missing_location` | 22 |
 | `invalid_dates` | 3 |
-
-The failed OpenAI calls in the log were primarily from an invalid/overridden API key during development. The fix was to load `.env` with `override=True`, so the project `.env` key takes priority over stale system environment variables.
+| `no_rooms` | 3 |
 
 ---
 
-## 4. Root Cause Analysis - Failure Traces
+## 5. Root Cause Analysis - Failure Traces
 
 ### Case Study 1: Follow-up Repeated Old Room List
 
 - **Input**: `tôi cần phòng trên 80m2`
-- **Observed Failure**: The agent initially returned the same old list instead of filtering rooms by area.
-- **Root Cause**: Follow-up classification treated area/detail terms as generic detail questions. `_extract_option_criteria` did not parse `trên 80m2` into a numeric filter.
+- **Observed Failure**: The agent returned the same old room list instead of filtering rooms by area.
+- **Failed Trace Pattern**:
+
+```text
+Thought: Xem câu hỏi có phải follow-up từ kết quả tìm phòng trước đó hay không.
+Action: classify_follow_up(message='toi can phong tren 80m2')
+Observation: {"type": "new_search"}
+```
+
+- **Root Cause**:
+  - `_extract_option_criteria` did not parse `trên 80m2`.
+  - Generic detail/search classification happened before numeric area criteria.
+  - `_select_options_for_response` had no `min_area_sqm` or `max_area_sqm` filter.
 - **Fix**:
-  - Added `_extract_area_criteria`.
-  - Moved criteria extraction before generic detail classification.
-  - Added deterministic filters:
 
 ```python
+criteria["min_area_sqm"] = 80
 room["area_sqm"] > criteria["min_area_sqm"]
-room["area_sqm"] < criteria["max_area_sqm"]
 ```
 
 - **Validation**:
-  - Added `tests/test_vinpearl_area_followup.py`.
-  - Verified `trên 80m2` returns only `VILLA_2BR` and `FAMILY`.
+  - `tests/test_vinpearl_area_followup.py`
+  - `test_follow_up_filters_rooms_over_area`
+  - `test_follow_up_filters_rooms_under_area`
 
-### Case Study 2: Follow-up With Multiple Constraints
+### Case Study 2: Compound Follow-up Criteria
 
 - **Input**: `tôi cần phòng có giường King, và có buffet sáng, diện tích phòng lớn`
-- **Observed Failure**: Rule-only matching could miss compound natural-language criteria or return rooms that did not match all constraints.
-- **Root Cause**: Initial follow-up handling did not use LLM to extract compound criteria such as bed type + meal plan + area sorting.
+- **Observed Failure**: Rule-only matching could miss compound criteria or return rooms that did not match all constraints.
+- **Root Cause**: The early follow-up flow did not use the LLM to normalize multiple natural-language constraints into a structured criteria object.
 - **Fix**:
   - Added `_extract_follow_up_with_llm`.
-  - Added sanitized criteria schema: `bed_keywords`, `amenity_keywords`, `min_area_sqm`, `max_area_sqm`, `sort`, `recommendation`.
-  - Kept final room selection deterministic in `_select_options_for_response`.
+  - Added criteria schema: `bed_keywords`, `amenity_keywords`, `min_area_sqm`, `max_area_sqm`, `sort`, `recommendation`.
+  - Kept final room selection deterministic.
 - **Validation**:
-  - Added test `test_follow_up_filters_multiple_room_criteria`.
-  - API test returned `SUITE` and `PREMIER`, both with king bed and breakfast.
+  - `test_follow_up_filters_multiple_room_criteria`
+  - API returns `SUITE` and `PREMIER`, both matching king bed and breakfast.
 
 ### Case Study 3: OpenAI Authentication Failure
 
@@ -197,28 +255,28 @@ OPENAI_EXTRACT_REQUEST_FAILED
 AuthenticationError: 401 invalid_api_key
 ```
 
-- **Root Cause**: The process-level `OPENAI_API_KEY` overrode the project `.env` key because `load_dotenv()` does not override existing environment variables by default.
+- **Root Cause**: A stale process-level `OPENAI_API_KEY` overrode the project `.env` key because `load_dotenv()` does not override existing environment variables by default.
 - **Fix**:
 
 ```python
 load_dotenv(PROJECT_ROOT / ".env", override=True)
 ```
 
-- **Result**: Trace showed successful OpenAI calls with `provider=openai`, `model=gpt-4o`, and token usage.
+- **Result**: The ReAct trace showed successful OpenAI calls with `provider=openai`, `model=gpt-4o`, `usage`, and `cost`.
 
 ---
 
-## 5. Ablation Studies & Experiments
+## 6. Ablation Studies & Experiments
 
-### Experiment 1: Chatbot Baseline vs Agent
+### Experiment 1: Chatbot Baseline vs Agent v2
 
-| Case | Plain Chatbot Baseline | Vinpearl Agent v2 | Winner |
+| Case | Chatbot Baseline | Vinpearl Agent v2 | Winner |
 | :--- | :--- | :--- | :--- |
-| Ask unrelated coding question | May answer coding question | Refuses as out-of-scope + hotline | Agent |
-| Ask "Tìm phòng Vinpearl Phú Quốc..." | May guess a property | Asks user to choose exact property if ambiguous | Agent |
-| Ask for rooms over 80m2 | May summarize old results or hallucinate | Filters `area_sqm > 80` from structured data | Agent |
-| Ask for king bed + breakfast + large room | May produce natural but unreliable answer | Extracts criteria and filters room data | Agent |
-| Ask "chi tiết phòng 2" | Lacks memory of actual cards | Uses context and displayed room IDs | Agent |
+| Unrelated coding question | May answer coding question | Refuses as out-of-scope + hotline | Agent |
+| `Tìm phòng Vinpearl Phú Quốc...` | May guess a property | Asks user to choose exact property if ambiguous | Agent |
+| `phòng trên 80m2` | May repeat old results or hallucinate | Filters `area_sqm > 80` from structured data | Agent |
+| King bed + breakfast + large room | May produce natural but unreliable answer | Extracts criteria and filters room data | Agent |
+| `chi tiết phòng 2` | Lacks memory of actual room cards | Uses context and displayed room IDs | Agent |
 
 ### Experiment 2: Agent v1 vs Agent v2
 
@@ -226,47 +284,44 @@ load_dotenv(PROJECT_ROOT / ".env", override=True)
 | :--- | :--- | :--- |
 | Initial room search | Working | Working |
 | Location ambiguity handling | Working | Working |
-| Follow-up room details | Partial | Improved |
+| Follow-up details | Partial | Improved with context and displayed room IDs |
 | Area filter | Missing/weak | Supports `trên/dưới N m2` |
 | Compound criteria | Weak | LLM extraction + deterministic filtering |
-| API key failure handling | Raw error/fallback | Error logged, LLM disabled for session, fallback parser |
+| API key failure handling | Raw fallback | Sanitized error, fallback parser, session-level LLM disable |
 | No-data handling | Generic message | Hotline handoff |
-| UI message quality | Included technical "dataset demo" text | User-friendly copy |
+| Monitoring | Basic logs | Token usage, latency, estimated cost, UI metrics |
 
-### Experiment 3: Rule Parser vs LLM Criteria Extraction
+### Experiment 3: Rule Parser vs LLM Criteria Extractor
 
-| Criterion | Rule Parser | LLM Follow-up Extractor |
-| :--- | :--- | :--- |
-| `trên 80m2` | Reliable after regex fix | Also understood |
-| `giường King` | Reliable keyword match | Normalizes to `king` |
-| `buffet sáng` | Reliable keyword match | Normalizes to `buffet` |
-| Compound request | Possible but brittle | More flexible |
-| Final room decision | Deterministic | Not used directly |
-
-Important design decision: the LLM extracts criteria, but code performs final filtering. This combines language flexibility with data accuracy.
+| Criterion | Rule Parser | LLM Follow-up Extractor | Final Decision |
+| :--- | :--- | :--- | :--- |
+| `trên 80m2` | Reliable after regex fix | Also understood | Code filter |
+| `giường King` | Keyword match | Normalizes to `king` | Code filter |
+| `buffet sáng` | Keyword match | Normalizes to `buffet` | Code filter |
+| Compound request | Possible but brittle | More flexible | Code filter |
+| Final room list | Deterministic | Not trusted directly | Dataset-backed output |
 
 ---
 
-## 6. Production Readiness Review
+## 7. Production Readiness Review
 
 ### Security
 
-- API keys are loaded from `.env`; `.env` is ignored by git.
-- OpenAI error messages are sanitized by `_safe_error_message` to avoid logging raw API keys.
+- API keys are loaded from `.env`; `.env` is not committed.
+- OpenAI errors are sanitized by `_safe_error_message` to avoid leaking raw keys.
 - The agent refuses unrelated questions to reduce misuse.
 
 ### Guardrails
 
-- Out-of-scope detection for topics such as coding, finance, news, weather, and politics.
-- Property/address is required before availability checks.
+- Out-of-scope detection for coding, finance, news, weather, politics, and other non-room topics.
+- Vinpearl property/address is required before availability checks.
 - Ambiguous locations trigger clarification.
-- No-data cases return a safe message and hotline.
-- LLM failures fall back to deterministic parsing.
+- No-data cases return a safe explanation and hotline.
+- OpenAI failures fall back to deterministic parsing.
 
 ### Reliability
 
-- Automated test suite covers location requirements, ambiguity, room availability, follow-ups, details, meal questions, budget recommendations, area filters, compound criteria, and hotline cases.
-- Final validation command:
+Final automated validation:
 
 ```powershell
 python -m pytest -q
@@ -275,23 +330,38 @@ python -m pytest -q
 Result:
 
 ```text
-17 passed
+20 passed
 ```
+
+Covered behavior includes:
+
+- out-of-scope refusal,
+- missing and ambiguous location handling,
+- specific address search,
+- OpenAI invocation trace,
+- follow-up details,
+- other-room requests,
+- meal-policy questions,
+- checkout date changes,
+- area filters,
+- compound criteria,
+- no-data hotline,
+- cost estimation.
 
 ### Scaling Path
 
-- Replace JSON dataset with a database or booking API.
-- Add `response_format={"type":"json_object"}`, `temperature=0`, and `max_tokens` limits to OpenAI calls.
-- Add cost estimation using official model pricing rather than mock pricing.
-- Add a RAG layer for policies/FAQs while keeping availability/pricing as structured tool outputs.
-- Add an evaluator script to run a fixed benchmark suite and export success rate, token cost, and latency.
+- Replace JSON dataset with a booking database or real inventory API.
+- Add `temperature=0`, `max_tokens`, and `response_format={"type":"json_object"}` to OpenAI extraction calls.
+- Add schema validation with a library such as Pydantic before merging LLM output into agent state.
+- Add RAG only for unstructured policies/FAQs, while keeping availability and price as structured tools.
+- Add an evaluator script that exports success rate, latency, token usage, and estimated cost.
 
 ---
 
-## 7. Group Learning Points
+## 8. Group Learning Points
 
-1. A chatbot is good at fluent text, but unreliable for structured booking data unless constrained.
-2. A ReAct-style agent is stronger because it can route from natural language to tools, inspect observations, and produce traceable outputs.
-3. LLM output should be treated as a proposal, not as source of truth, for business-critical data.
-4. Telemetry made debugging concrete: authentication failures, repeated answers, and bad follow-up classification were visible in logs.
-5. The best version combined LLM understanding, rule-based fallback, deterministic filtering, and domain guardrails.
+1. A free-form chatbot is fluent, but unsafe for structured booking data because it can hallucinate price, availability, and policies.
+2. A ReAct-style agent is stronger because it routes natural language into tools, observes tool results, and produces traceable answers.
+3. LLM output should be treated as extracted intent/criteria, not source-of-truth business data.
+4. Telemetry made debugging concrete: authentication failures, repeated follow-up answers, and weak criteria extraction became visible in logs.
+5. The most reliable design combined LLM understanding, rule-based fallback, deterministic filtering, domain guardrails, and token/cost monitoring.

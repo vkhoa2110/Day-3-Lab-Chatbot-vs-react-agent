@@ -4,43 +4,59 @@
 - **Student ID**: 2A202600603
 - **Date**: 2026-06-01
 - **Project**: Vinpearl Room Agent
+- **Final Test Command**: `python -m pytest -q`
+- **Final Test Result**: `20 passed`
 
 ---
 
-## I. Technical Contribution
+## Scoring Coverage Summary
 
-My main contribution was designing and improving the Vinpearl room-availability agent as a domain-specific ReAct-style system. The goal was to avoid a free-form chatbot that could hallucinate room prices or availability, and instead build an agent that uses LLMs only for understanding the user request while relying on structured tools and data for final decisions.
+| Individual Rubric Component | Points | Evidence |
+| :--- | ---: | :--- |
+| I. Technical Contribution | 15 | Implemented and improved agent flow, OpenAI extraction, follow-up handling, telemetry, UI, and tests. |
+| II. Debugging Case Study | 10 | Analyzed follow-up filtering failure and OpenAI key failure using trace/log evidence, then fixed both. |
+| III. Personal Insights | 10 | Reflected on reliability, observations, tool use, and why ReAct is different from a normal chatbot. |
+| IV. Future Improvements | 5 | Proposed production scaling path with API/database backend, schema validation, RAG, and multi-agent split. |
+
+---
+
+## I. Technical Contribution (15 Points)
+
+My main contribution was designing and improving the Vinpearl room-availability agent as a domain-specific ReAct-style system. The objective was to avoid a free-form chatbot that could hallucinate room availability or prices, and instead build an agent that uses LLMs for understanding while relying on structured tools for final facts.
 
 ### Modules Implemented / Modified
 
 | Module | Contribution |
 | :--- | :--- |
-| `src/agent/vinpearl_agent.py` | Implemented the main Vinpearl agent flow: intent extraction, location resolution, availability check, follow-up handling, guardrails, trace generation, and final response formatting. |
-| `src/tools/vinpearl_tools.py` | Used the knowledge base layer to resolve properties and check room availability from structured data. |
-| `src/web_app.py` | Built the web UI/API flow for `/api/chat` and `/api/locations`, including sidebar search and room card rendering. |
-| `src/core/openai_provider.py` | Integrated OpenAI as the LLM provider through the existing `LLMProvider` interface. |
-| `tests/test_vinpearl_agent.py` | Added and maintained tests for core agent behavior, follow-up logic, OpenAI usage, hotline handling, and compound criteria filtering. |
-| `tests/test_vinpearl_area_followup.py` | Added focused tests for area-based follow-ups such as "trên 80m2" and "dưới 80m2". |
-| `VINPEARL_AGENT_ARCHITECTURE.md` | Wrote architecture documentation explaining the agent design, context handling, LLM usage, tools, logging, and debug flow. |
+| `src/agent/vinpearl_agent.py` | Implemented the main Vinpearl agent flow: intent extraction, scope guardrail, location resolution, availability check, follow-up handling, trace generation, final response formatting, and `llm_metrics` aggregation. |
+| `src/tools/vinpearl_tools.py` | Used the knowledge-base layer to resolve Vinpearl properties, check room availability, compute prices/promotions, and expose room details from structured data. |
+| `src/web_app.py` | Built the web UI/API flow for `/api/chat` and `/api/locations`, sidebar search, room cards, ReAct trace display, and token/cost metric pills. |
+| `src/core/openai_provider.py` | Integrated OpenAI through the `LLMProvider` interface and added token usage plus estimated cost metadata. |
+| `src/telemetry/metrics.py` | Replaced dummy cost tracking with structured estimated USD cost based on prompt/completion tokens and configurable per-1M-token rates. |
+| `src/agent/agent.py` | Added cost metadata to generic ReAct LLM-step logs. |
+| `tests/test_vinpearl_agent.py` | Added and maintained tests for core behavior, OpenAI usage, follow-up logic, hotline handling, compound criteria, and LLM metrics aggregation. |
+| `tests/test_vinpearl_area_followup.py` | Added focused tests for area-based follow-ups such as `trên 80m2` and `dưới 80m2`. |
+| `tests/test_openai_provider.py` | Added unit tests for `gpt-4o`, `gpt-4o-mini`, and cost override estimation. |
+| `VINPEARL_AGENT_ARCHITECTURE.md` | Documented architecture, context, tool usage, LLM responsibilities, logging, and debug process. |
 
 ### Code Highlights
 
-The most important design decision was separating LLM understanding from data truth:
+The most important design decision was separating language understanding from business facts:
 
 ```text
 LLM = intent and criteria extraction
-Tool/dataset = source of truth
-Code filters = final decision
-Formatter = user-facing response
+Tool / dataset = source of truth
+Code filter = final room selection
+Formatter = final user answer
 ```
 
-For example, when the user asks:
+Example user request:
 
 ```text
 tôi cần phòng có giường King, buffet sáng, diện tích phòng lớn
 ```
 
-OpenAI extracts criteria:
+Expected LLM criteria:
 
 ```json
 {
@@ -53,37 +69,60 @@ OpenAI extracts criteria:
 }
 ```
 
-The final room list is not generated by the LLM. It is produced by deterministic filtering in `_select_options_for_response`, so the system cannot invent rooms or prices.
+The final room list is not generated by the LLM. It is produced by deterministic filtering in `_select_options_for_response`, so the system cannot invent room names, prices, availability, or policies.
+
+### Telemetry Contribution
+
+I added token and cost visibility so the app can be evaluated like a production prototype:
+
+```text
+usage.prompt_tokens
+usage.completion_tokens
+usage.total_tokens
+cost.input_cost_usd
+cost.output_cost_usd
+cost.total_cost_usd
+```
+
+These fields are now available in:
+
+- `OPENAI_EXTRACT_REQUEST`
+- `OPENAI_EXTRACT_FOLLOW_UP`
+- `LLM_METRIC`
+- `VINPEARL_QA`
+- web UI metric pills under assistant answers
 
 ### Evidence of Code Quality
 
-- The agent has modular responsibilities: extraction, scope check, location resolution, availability check, follow-up classification, filtering, formatting, logging.
-- LLM calls are wrapped in try/except with fallback behavior.
-- API keys are loaded from project `.env` with `override=True` to avoid stale system environment variables.
-- OpenAI errors are sanitized before logging.
-- Tests currently pass:
+- Agent responsibilities are modular: extraction, scope check, location resolution, availability check, follow-up classification, filtering, formatting, logging.
+- LLM calls are wrapped in `try/except` with fallback behavior.
+- Invalid OpenAI-key errors are sanitized and disable LLM use for the current agent session.
+- The project `.env` is loaded with `override=True` to avoid stale environment variables.
+- Final tests pass:
 
 ```text
-17 passed
+20 passed
 ```
 
 ---
 
-## II. Debugging Case Study
+## II. Debugging Case Study (10 Points)
 
-### Problem Description
+### Case Study 1: Follow-up Returned the Old Room List
 
-One important failure happened after the first successful room search. The user asked a follow-up:
+#### Problem Description
+
+After a successful room search, the user asked:
 
 ```text
 tôi cần phòng trên 80m2
 ```
 
-The early version of the agent returned almost the same old room list instead of filtering only rooms above 80m2.
+The early version returned nearly the same old room list instead of filtering only rooms above 80m2.
 
-### Log / Trace Source
+#### Log / Trace Source
 
-The UI trace showed that the system classified the follow-up incorrectly or treated it too generally:
+The ReAct trace showed that the follow-up was not being interpreted as a strict area filter:
 
 ```text
 Thought: Xem câu hỏi có phải follow-up từ kết quả tìm phòng trước đó hay không.
@@ -91,35 +130,33 @@ Action: classify_follow_up(message='toi can phong tren 80m2')
 Observation: {"type": "new_search"}
 ```
 
-In another failure pattern, area/detail terms were checked before explicit criteria, so the agent leaned toward a generic details/new-search path rather than a strict filter.
+#### Diagnosis
 
-### Diagnosis
+The issue was not simply that the LLM gave a weak answer. The agent itself lacked deterministic criteria extraction for area filters.
 
-The issue was not simply that "the LLM did not answer well". The deeper problem was the agent lacked deterministic criteria extraction for area filters.
-
-Specifically:
+Specific causes:
 
 - `_extract_option_criteria` did not parse `trên 80m2`.
-- `_classify_follow_up` did not prioritize numeric criteria before generic detail terms.
-- `_select_options_for_response` had no `min_area_sqm` / `max_area_sqm` filtering.
+- `_classify_follow_up` treated area/detail phrases too generally.
+- `_select_options_for_response` did not apply `min_area_sqm` or `max_area_sqm`.
 
-This caused the agent to reuse previous room options without applying the user's new constraint.
+Because of that, the agent reused previous room options without enforcing the user's new constraint.
 
-### Solution
+#### Solution
 
-I fixed the issue by adding explicit area criteria extraction and deterministic filtering:
+I added area criteria extraction:
 
 ```python
 criteria["min_area_sqm"] = 80
 ```
 
-Then room options are filtered with:
+Then applied deterministic filtering:
 
 ```python
 room["area_sqm"] > criteria["min_area_sqm"]
 ```
 
-I also added tests:
+I also added regression tests:
 
 - `test_follow_up_filters_rooms_over_area`
 - `test_follow_up_filters_rooms_under_area`
@@ -128,18 +165,26 @@ After the fix:
 
 ```text
 User: tôi cần phòng trên 80m2
-Agent: returns only FAMILY and VILLA_2BR
+Agent: returns only rooms with area_sqm > 80
 ```
 
-### Second Debugging Case: OpenAI Key Not Actually Used
+### Case Study 2: OpenAI Key Was Not Actually Used
 
-Another issue was OpenAI returning:
+#### Problem Description
+
+The trace showed:
 
 ```text
 AuthenticationError: 401 invalid_api_key
 ```
 
-The root cause was that the process already had an old `OPENAI_API_KEY` in the system environment. `load_dotenv()` does not override existing environment variables by default, so the app was not using the key in project `.env`.
+This meant the app was attempting to call OpenAI, but it was not using the expected key from the project `.env`.
+
+#### Diagnosis
+
+The process already had an old `OPENAI_API_KEY` in the system environment. By default, `load_dotenv()` does not override existing environment variables, so the app used the stale key instead of the project key.
+
+#### Solution
 
 The fix was:
 
@@ -147,88 +192,95 @@ The fix was:
 load_dotenv(PROJECT_ROOT / ".env", override=True)
 ```
 
-After restart, the trace showed successful OpenAI usage:
+After restart, the trace showed successful OpenAI calls:
 
 ```text
 provider: openai
 model: gpt-4o
 usage: {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...}
+cost: {"total_cost_usd": ...}
 ```
+
+This also improved debuggability because the app now exposes whether LLM calls are real and how many tokens/cost they consume.
 
 ---
 
-## III. Personal Insights: Chatbot vs ReAct
+## III. Personal Insights: Chatbot vs ReAct (10 Points)
 
 ### 1. Reasoning
 
-A normal chatbot can respond fluently, but it does not naturally know when to query structured data or how to verify its own answer. In this project, ReAct-style tracing forced the system to break the task into steps:
+A normal chatbot can produce fluent text, but it does not naturally decide when to call tools or verify structured facts. ReAct forced the system to split work into:
 
 ```text
 Thought -> Action -> Observation -> Final Answer
 ```
 
-This made the behavior easier to debug. If the answer was wrong, I could inspect whether the issue came from intent extraction, location resolution, availability checking, follow-up classification, or formatting.
+This made failures easier to locate. If an answer was wrong, I could inspect whether the issue came from intent extraction, location resolution, availability checking, follow-up classification, filtering, or formatting.
 
 ### 2. Reliability
 
-The agent is more reliable than a chatbot for structured tasks because it uses tools and code to validate answers. For example, room availability and price are not generated from the model's memory. They come from the dataset through `VinpearlKnowledgeBase`.
+The ReAct agent is more reliable than a chatbot for booking data because the final answer is grounded in tool observations. Room availability, room size, price, policies, and promotions come from `VinpearlKnowledgeBase`, not model memory.
 
-However, the agent can perform worse than a simple chatbot when the user asks broad natural-language questions outside its tool coverage. A generic chatbot would answer those questions naturally, but our agent intentionally refuses them because the assignment requires the agent to stay inside the Vinpearl room-search domain.
+The agent can perform worse than a generic chatbot when the user asks broad questions outside the tool scope. For example, a normal chatbot can answer coding or finance questions, but this agent intentionally refuses them because the assignment requires the system to stay within Vinpearl room-search.
 
 ### 3. Observation Feedback
 
-The observation step is the most valuable difference. Instead of guessing, the agent observes:
+The observation step is the core difference. The agent observes:
 
-- whether a location was found or ambiguous,
-- how many room options exist,
+- whether a Vinpearl location is missing or ambiguous,
+- how many room options are available,
 - whether a filter returns zero matches,
 - whether OpenAI extraction failed,
-- which room cards were displayed previously.
+- which room cards were displayed previously,
+- token usage and estimated cost of LLM calls.
 
-The next step is based on those observations, not just the user's text.
+The next step is based on those observations instead of only the user text.
 
 ### 4. LLM Role
 
-The project clarified that the LLM does not have to be the final answer generator. In this agent:
+This lab clarified that the LLM does not need to be the final source of truth. In this project:
 
 ```text
-LLM = natural-language understanding
+LLM = language understanding
 Tools = data retrieval
 Code = correctness and filtering
 ```
 
-This is a better fit for booking-like systems where correctness matters more than creative language generation.
+That design is a better fit for hotel booking workflows because factual correctness matters more than creative generation.
 
 ---
 
-## IV. Future Improvements
+## IV. Future Improvements (5 Points)
 
 ### Scalability
 
-- Replace the JSON dataset with a relational database or real booking API.
-- Add caching for location lookup and repeated availability searches.
-- Add async request handling if the app serves multiple users concurrently.
+- Replace the JSON dataset with a relational database or real Vinpearl booking API.
+- Add caching for repeated location lookups and availability searches.
+- Use async request handling for concurrent users.
+- Add a scheduled evaluation job that exports success rate, latency, token usage, and estimated cost.
 
 ### Safety
 
-- Add `response_format={"type":"json_object"}` to OpenAI calls.
-- Set `temperature=0` and `max_tokens=300-400` for stable extraction.
-- Add a stricter schema validator for LLM JSON before merging criteria.
-- Add audit logging for all final room filters.
+- Set `temperature=0`, `max_tokens=300-400`, and `response_format={"type":"json_object"}` for extraction calls.
+- Add strict schema validation with Pydantic before merging LLM output into agent state.
+- Add a supervisor check for final answers to ensure no room/price/policy is invented.
+- Keep out-of-scope refusal and hotline handoff for unknown or unsupported requests.
 
 ### Performance
 
-- Track real OpenAI pricing and token cost instead of only raw token counts.
-- Add a benchmark script that runs fixed chatbot vs agent cases and exports a CSV/Markdown table.
-- Reduce prompt size by passing only relevant hotel and room summaries instead of broad context when possible.
+- Reduce prompt size by sending only relevant hotel and room summaries to the LLM.
+- Use `gpt-4o-mini` for extraction when accuracy is sufficient, then compare cost and success rate.
+- Track cost per successful task, not only cost per API call.
 
 ### Production RAG / Multi-Agent Direction
 
-For a production-level system, I would keep availability and pricing as structured tools, then add RAG only for unstructured content such as hotel policies, FAQs, transportation instructions, and cancellation terms. A multi-agent version could split responsibilities:
+For production, I would keep availability and pricing as structured tools, then add RAG only for unstructured content such as policies, FAQs, transportation, and cancellation details.
 
-- **Intent Agent**: classify user intent and extract structured fields.
-- **Booking Tool Agent**: query inventory/pricing APIs.
-- **Policy RAG Agent**: retrieve policy text.
-- **Supervisor Agent**: check whether the final answer stays within data and policy constraints.
+A multi-agent version could split responsibilities:
 
-This would preserve the current strength of the project: natural-language flexibility without giving the LLM uncontrolled authority over factual booking data.
+- **Intent Agent**: classify intent and extract booking fields.
+- **Booking Tool Agent**: query inventory and pricing APIs.
+- **Policy RAG Agent**: retrieve policy/FAQ documents.
+- **Supervisor Agent**: verify the final answer against tool observations.
+
+This would preserve the strongest part of the current project: natural-language flexibility without giving the LLM uncontrolled authority over factual booking data.
