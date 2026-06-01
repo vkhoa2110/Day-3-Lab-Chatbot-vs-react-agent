@@ -138,3 +138,20 @@ def test_follow_up_can_change_checkout_by_day_number():
     assert changed["status"] == "ok"
     assert changed["summary"]["checkout"] == "2026-06-18"
     assert "18/06/2026" in changed["answer"]
+
+
+def test_follow_up_moderate_budget_recommends_midrange_room():
+    agent = VinpearlRoomAgent()
+    first = agent.respond(
+        "Tim phong Vinpearl Discovery Greenhill Phu Quoc tu 15/07 den 18/07 cho 2 nguoi"
+    )
+
+    recommendation = agent.respond(
+        "tai chinh vua thi nen chon phong nao",
+        first["context"],
+    )
+
+    assert recommendation["status"] == "ok"
+    assert recommendation["room_cards"]
+    assert recommendation["room_cards"][0]["room_name"] == "Phòng Premier"
+    assert "tài chính vừa" in recommendation["answer"].lower()

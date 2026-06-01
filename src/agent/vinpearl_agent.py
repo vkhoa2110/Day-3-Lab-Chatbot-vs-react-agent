@@ -46,6 +46,7 @@ class VinpearlRoomAgent:
     ):
         self.kb = knowledge_base or VinpearlKnowledgeBase()
         self.llm = llm
+        self.llm_disabled_reason: Optional[str] = None
 
     def respond(
         self,
@@ -107,7 +108,7 @@ class VinpearlRoomAgent:
             return response
 
         llm_extraction = self._extract_request_with_llm(message, context)
-        if llm_extraction:
+        if llm_extraction and not llm_extraction.get("_error"):
             add_trace(
                 "Dùng OpenAI để hiểu ý định và trích xuất tham số đặt phòng từ câu hỏi người dùng.",
                 "openai_extract_booking_request(message=...)",
@@ -121,6 +122,16 @@ class VinpearlRoomAgent:
                     "checkin": llm_extraction.get("checkin"),
                     "checkout": llm_extraction.get("checkout"),
                     "guests": llm_extraction.get("guests"),
+                },
+            )
+        elif llm_extraction and llm_extraction.get("_error"):
+            add_trace(
+                "OpenAI không khả dụng nên dùng bộ hiểu ngữ cảnh nội bộ để xử lý yêu cầu.",
+                "fallback_rule_based_parser(reason='openai_unavailable')",
+                {
+                    "provider": llm_extraction.get("_provider"),
+                    "model": llm_extraction.get("_model"),
+                    "available": False,
                 },
             )
 
@@ -554,6 +565,23 @@ class VinpearlRoomAgent:
         criteria: Dict[str, Any] = {}
         if any(term in normalized for term in ("re hon", "gia re", "budget", "tiet kiem")):
             criteria["sort"] = "cheapest"
+        if any(
+            term in normalized
+            for term in (
+                "tai chinh vua",
+                "ngan sach vua",
+                "vua tien",
+                "tam trung",
+                "gia vua",
+                "hop ly",
+                "khong qua dat",
+                "can bang",
+            )
+        ):
+            criteria["sort"] = "moderate"
+            criteria["recommendation"] = "moderate_budget"
+        if any(term in normalized for term in ("nen chon", "goi y", "phu hop nhat")):
+            criteria["recommendation"] = criteria.get("recommendation", "best_value")
         if any(term in normalized for term in ("cao cap", "sang hon", "dat hon")):
             criteria["sort"] = "premium"
         if any(term in normalized for term in ("rong hon", "dien tich lon", "lon hon")):
@@ -722,6 +750,13 @@ class VinpearlRoomAgent:
             filtered.sort(key=lambda room: room["total_vnd"], reverse=True)
         elif criteria.get("sort") == "largest":
             filtered.sort(key=lambda room: room["area_sqm"], reverse=True)
+        elif criteria.get("sort") == "moderate":
+            filtered.sort(key=lambda room: room["total_vnd"])
+            if len(filtered) >= 3:
+                middle_index = min(2, len(filtered) - 1)
+                filtered = filtered[middle_index : middle_index + 2]
+            elif len(filtered) == 2:
+                filtered = [filtered[1]]
         else:
             filtered.sort(key=lambda room: room["total_vnd"])
 
@@ -847,7 +882,7 @@ class VinpearlRoomAgent:
         message: str,
         context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        if not self.llm:
+        if not self.llm or self.llm_disabled_reason:
             return None
 
         hotels = [
@@ -898,6 +933,8 @@ class VinpearlRoomAgent:
             return parsed
         except Exception as exc:
             error_message = self._safe_error_message(str(exc))
+            if "401" in error_message or "invalid_api_key" in error_message:
+                self.llm_disabled_reason = "openai_authentication_failed"
             logger.log_event(
                 "OPENAI_EXTRACT_REQUEST_FAILED",
                 {
@@ -1065,11 +1102,26 @@ class VinpearlRoomAgent:
                 f"từ {checkin} đến {checkout} ({availability['nights']} đêm)."
             )
         elif follow_up["type"] == "refine":
-            opening = (
-                f"Mình lọc lại được {len(options)} lựa chọn phù hợp hơn tại "
-                f"{hotel['hotel_name']} ({hotel['address']}) cho {guests} khách, "
-                f"từ {checkin} đến {checkout} ({availability['nights']} đêm)."
-            )
+            if follow_up.get("criteria", {}).get("recommendation") == "moderate_budget":
+                opening = (
+                    f"Với tiêu chí tài chính vừa, mình khuyên ưu tiên "
+                    f"{options[0]['room_name']} tại {hotel['hotel_name']} "
+                    f"({hotel['address']}) cho {guests} khách, từ {checkin} "
+                    f"đến {checkout} ({availability['nights']} đêm). Đây là lựa chọn "
+                    "cân bằng giữa tổng giá, diện tích và sức chứa so với các phòng đang có."
+                )
+            elif follow_up.get("criteria", {}).get("recommendation"):
+                opening = (
+                    f"Mình gợi ý {options[0]['room_name']} là lựa chọn phù hợp để ưu tiên tại "
+                    f"{hotel['hotel_name']} ({hotel['address']}) cho {guests} khách, "
+                    f"từ {checkin} đến {checkout} ({availability['nights']} đêm)."
+                )
+            else:
+                opening = (
+                    f"Mình lọc lại được {len(options)} lựa chọn phù hợp hơn tại "
+                    f"{hotel['hotel_name']} ({hotel['address']}) cho {guests} khách, "
+                    f"từ {checkin} đến {checkout} ({availability['nights']} đêm)."
+                )
         else:
             opening = (
                 f"Mình tìm thấy {availability['total_matches']} hạng phòng còn trống tại "
