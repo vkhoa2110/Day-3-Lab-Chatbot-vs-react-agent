@@ -73,6 +73,39 @@ class VinpearlRoomAgent:
                 }
             )
 
+        def finish(
+            answer: str,
+            trace: List[Dict[str, str]],
+            context: Dict[str, Any],
+            status: str,
+            room_cards: Optional[List[Dict[str, Any]]] = None,
+            location_options: Optional[List[Dict[str, Any]]] = None,
+            summary: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            response = self._response(
+                answer,
+                trace,
+                context=context,
+                status=status,
+                room_cards=room_cards,
+                location_options=location_options,
+                summary=summary,
+            )
+            logger.log_event(
+                "VINPEARL_QA",
+                {
+                    "question": message,
+                    "answer": response["answer"],
+                    "status": response["status"],
+                    "summary": response["summary"],
+                    "room_cards": self._room_cards_for_log(response["room_cards"]),
+                    "location_options": self._location_options_for_log(
+                        response["location_options"]
+                    ),
+                },
+            )
+            return response
+
         llm_extraction = self._extract_request_with_llm(message, context)
         if llm_extraction:
             add_trace(
@@ -114,7 +147,7 @@ class VinpearlRoomAgent:
                 "dataset demo. Vui lòng gửi địa chỉ/cơ sở Vinpearl, ngày nhận "
                 "phòng, ngày trả phòng và số khách."
             )
-            return self._response(answer, trace, context=context, status="out_of_scope")
+            return finish(answer, trace, context=context, status="out_of_scope")
 
         request = self._extract_request(message, context, llm_extraction)
         add_trace(
@@ -145,7 +178,7 @@ class VinpearlRoomAgent:
                     {"examples": examples},
                 )
                 answer = self._ask_for_location(examples)
-                return self._response(
+                return finish(
                     answer,
                     trace,
                     context=self._merge_context(context, request),
@@ -175,7 +208,7 @@ class VinpearlRoomAgent:
                     )
                     + "."
                 )
-                return self._response(
+                return finish(
                     answer,
                     trace,
                     context=self._merge_context(context, request),
@@ -184,7 +217,7 @@ class VinpearlRoomAgent:
                 )
             if resolution["status"] == "ambiguous":
                 answer = self._ask_to_disambiguate(resolution["matches"])
-                return self._response(
+                return finish(
                     answer,
                     trace,
                     context=self._merge_context(context, request),
@@ -214,7 +247,7 @@ class VinpearlRoomAgent:
                 f"tồn phòng. Dataset demo có dữ liệu từ {self.kb.min_date.strftime('%d/%m/%Y')} "
                 f"đến {self.kb.max_date.strftime('%d/%m/%Y')}."
             )
-            return self._response(
+            return finish(
                 answer,
                 trace,
                 context=self._merge_context(context, request),
@@ -244,7 +277,7 @@ class VinpearlRoomAgent:
         )
 
         if availability["status"] != "ok":
-            return self._response(
+            return finish(
                 availability.get("message", "Không thể kiểm tra tồn phòng."),
                 trace,
                 context=self._merge_context(context, request),
@@ -258,7 +291,7 @@ class VinpearlRoomAgent:
                 f"{self._display_date(request['checkin'])} đến {self._display_date(request['checkout'])}. "
                 "Bạn có thể thử đổi ngày, giảm số khách hoặc chọn cơ sở Vinpearl khác."
             )
-            return self._response(
+            return finish(
                 answer,
                 trace,
                 context=self._merge_context(context, request),
@@ -297,7 +330,7 @@ class VinpearlRoomAgent:
                 ) or options[:ROOM_PAGE_SIZE]
                 answer = self._format_displayed_detail_answer(displayed_options, message)
                 room_cards = displayed_options
-            return self._response(
+            return finish(
                 answer,
                 trace,
                 context=response_context,
@@ -324,7 +357,7 @@ class VinpearlRoomAgent:
                 hotel["hotel_name"],
                 hotel["address"],
             )
-            return self._response(
+            return finish(
                 answer,
                 trace,
                 context=response_context,
@@ -356,7 +389,7 @@ class VinpearlRoomAgent:
                 "returned_options": len(availability["options"]),
             },
         )
-        return self._response(
+        return finish(
             answer,
             trace,
             context=response_context,
@@ -418,11 +451,13 @@ class VinpearlRoomAgent:
         checkin = (
             parsed_checkin
             or self._clean_iso_date(llm_extraction.get("checkin"))
+            or self._extract_relative_date_update(message, context).get("checkin")
             or context.get("checkin")
         )
         checkout = (
             parsed_checkout
             or self._clean_iso_date(llm_extraction.get("checkout"))
+            or self._extract_relative_date_update(message, context).get("checkout")
             or context.get("checkout")
         )
         guests = (
@@ -463,6 +498,10 @@ class VinpearlRoomAgent:
         )
         if not has_previous_result:
             return {"type": "new_search"}
+
+        date_update = self._extract_relative_date_update(message, context)
+        if date_update:
+            return {"type": "new_search", "date_update": date_update}
 
         explicit_new_search = bool(
             extract_date_range(message, default_year=self.kb.min_date.year)[0]
@@ -533,6 +572,57 @@ class VinpearlRoomAgent:
             criteria["budget_min_vnd"], criteria["budget_max_vnd"] = budget
         return criteria
 
+    def _extract_relative_date_update(
+        self,
+        message: str,
+        context: Dict[str, Any],
+    ) -> Dict[str, str]:
+        normalized = normalize_text(message)
+        if not context.get("checkin") and not context.get("checkout"):
+            return {}
+
+        day_match = re.search(r"(?:ngay|sang|den|toi)\s+(\d{1,2})(?!\d)", normalized)
+        if not day_match:
+            return {}
+
+        day = int(day_match.group(1))
+        if day < 1 or day > 31:
+            return {}
+
+        checkin_date = self.kb.parse_iso_date(context["checkin"]) if context.get("checkin") else None
+        checkout_date = self.kb.parse_iso_date(context["checkout"]) if context.get("checkout") else None
+
+        target_field = "checkout"
+        if any(term in normalized for term in ("nhan phong", "checkin", "tu ngay", "bat dau")):
+            target_field = "checkin"
+        elif any(term in normalized for term in ("tra phong", "checkout", "den ngay", "toi ngay", "doi sang")):
+            target_field = "checkout"
+
+        base_date = checkout_date or checkin_date
+        if not base_date:
+            return {}
+
+        try:
+            candidate = base_date.replace(day=day)
+        except ValueError:
+            return {}
+
+        if target_field == "checkout" and checkin_date and candidate <= checkin_date:
+            month = candidate.month + 1
+            year = candidate.year
+            if month > 12:
+                month = 1
+                year += 1
+            try:
+                candidate = candidate.replace(year=year, month=month)
+            except ValueError:
+                return {}
+
+        if target_field == "checkin" and checkout_date and candidate >= checkout_date:
+            return {}
+
+        return {target_field: candidate.isoformat()}
+
     @staticmethod
     def _extract_budget_vnd(normalized: str) -> Optional[Tuple[int, int]]:
         multiplier = 1_000_000 if "trieu" in normalized else 1
@@ -566,6 +656,23 @@ class VinpearlRoomAgent:
     ) -> List[Dict[str, Any]]:
         criteria = follow_up.get("criteria") or {}
         filtered = list(options)
+        normalized = normalize_text(message)
+        wants_other = any(
+            term in normalized
+            for term in (
+                "khac",
+                "them",
+                "nua",
+                "chua ung",
+                "khong ung",
+                "khong thich",
+                "doi phong",
+            )
+        )
+        displayed_options = self._options_by_ids(
+            options,
+            context.get("last_displayed_room_ids", []),
+        )
 
         if criteria.get("room_keyword"):
             keyword = criteria["room_keyword"]
@@ -597,6 +704,19 @@ class VinpearlRoomAgent:
                 for room in filtered
                 if criteria["budget_min_vnd"] <= room["total_vnd"] <= criteria["budget_max_vnd"]
             ]
+        if criteria.get("sort") == "cheapest" and any(
+            term in normalized for term in ("re hon", "gia re hon", "thap hon")
+        ):
+            baseline_options = displayed_options
+            selected_room = self._options_by_ids(
+                options,
+                [context.get("selected_room_type_id")] if context.get("selected_room_type_id") else [],
+            )
+            if selected_room:
+                baseline_options = selected_room
+            if baseline_options:
+                ceiling = min(room["total_vnd"] for room in baseline_options)
+                filtered = [room for room in filtered if room["total_vnd"] < ceiling]
 
         if criteria.get("sort") == "premium":
             filtered.sort(key=lambda room: room["total_vnd"], reverse=True)
@@ -608,10 +728,9 @@ class VinpearlRoomAgent:
         if follow_up["type"] == "more":
             shown_ids = set(context.get("shown_room_type_ids", []))
             filtered = [room for room in filtered if room["room_type_id"] not in shown_ids]
-        elif follow_up["type"] == "refine" and "khac" in normalize_text(message):
+        elif follow_up["type"] == "refine" and wants_other:
             displayed_ids = set(context.get("last_displayed_room_ids", []))
-            if len(filtered) > ROOM_PAGE_SIZE:
-                filtered = [room for room in filtered if room["room_type_id"] not in displayed_ids]
+            filtered = [room for room in filtered if room["room_type_id"] not in displayed_ids]
 
         return filtered[:ROOM_PAGE_SIZE]
 
@@ -826,6 +945,36 @@ class VinpearlRoomAgent:
         if "last_room_options" in context:
             safe["last_room_options_count"] = len(context.get("last_room_options") or [])
         return safe
+
+    @staticmethod
+    def _room_cards_for_log(room_cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "hotel_id": room.get("hotel_id"),
+                "hotel_name": room.get("hotel_name"),
+                "room_type_id": room.get("room_type_id"),
+                "room_name": room.get("room_name"),
+                "min_available_rooms": room.get("min_available_rooms"),
+                "max_guests": room.get("max_guests"),
+                "total_vnd": room.get("total_vnd"),
+                "total_display": room.get("total_display"),
+            }
+            for room in room_cards
+        ]
+
+    @staticmethod
+    def _location_options_for_log(
+        location_options: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        return [
+            {
+                "hotel_id": item.get("hotel_id"),
+                "hotel_name": item.get("hotel_name"),
+                "address": item.get("address"),
+                "region": item.get("region"),
+            }
+            for item in location_options
+        ]
 
     def _merge_context(
         self,

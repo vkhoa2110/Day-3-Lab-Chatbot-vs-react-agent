@@ -112,3 +112,29 @@ def test_follow_up_can_answer_meal_question_for_displayed_rooms():
     assert meal["status"] == "ok"
     assert len(meal["room_cards"]) == len(first["room_cards"])
     assert "buffet" in meal["answer"].lower()
+
+
+def test_follow_up_other_cheaper_does_not_repeat_same_room():
+    agent = VinpearlRoomAgent()
+    first = agent.respond(
+        "Tim phong Vinholidays Fiesta Phu Quoc tu 05/06 den 17/06 cho 2 nguoi"
+    )
+
+    cheaper = agent.respond("toi can phong khac re hon", first["context"])
+
+    assert cheaper["status"] == "no_more_rooms"
+    assert not cheaper["room_cards"]
+    assert "chưa tìm thấy" in cheaper["answer"].lower()
+
+
+def test_follow_up_can_change_checkout_by_day_number():
+    agent = VinpearlRoomAgent()
+    first = agent.respond(
+        "Tim phong Vinholidays Fiesta Phu Quoc tu 05/06 den 17/06 cho 2 nguoi"
+    )
+
+    changed = agent.respond("toi muon doi sang ngay 18", first["context"])
+
+    assert changed["status"] == "ok"
+    assert changed["summary"]["checkout"] == "2026-06-18"
+    assert "18/06/2026" in changed["answer"]
