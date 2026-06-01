@@ -62,6 +62,7 @@ Only call tools listed above. If a final answer is ready, write Final Answer and
                     "step": steps + 1,
                     "content": content,
                     "usage": result.get("usage", {}),
+                    "cost": result.get("cost", {}),
                     "latency_ms": result.get("latency_ms"),
                 },
             )

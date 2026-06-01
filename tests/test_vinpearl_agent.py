@@ -15,6 +15,7 @@ class FakeOpenAILLM:
                 '"checkin":"2026-07-15","checkout":"2026-07-18","guests":2}'
             ),
             "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18},
+            "cost": {"currency": "USD", "total_cost_usd": 0.000105, "estimated": True},
             "latency_ms": 1,
             "provider": "openai",
         }
@@ -41,6 +42,7 @@ class FakeFollowUpCriteriaLLM:
         return {
             "content": content,
             "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18},
+            "cost": {"currency": "USD", "total_cost_usd": 0.000105, "estimated": True},
             "latency_ms": 1,
             "provider": "openai",
         }
@@ -98,6 +100,9 @@ def test_openai_llm_is_called_when_configured():
     assert result["status"] == "ok"
     assert result["room_cards"]
     assert "openai_extract_booking_request" in result["trace_text"]
+    assert "total_cost_usd" in result["trace_text"]
+    assert result["llm_metrics"]["total_usage"]["total_tokens"] == 18
+    assert result["llm_metrics"]["total_cost"]["total_cost_usd"] == 0.000105
 
 
 def test_follow_up_returns_room_not_shown_before():

@@ -19,7 +19,8 @@ class LLMProvider(ABC):
         Returns:
             Dict containing:
             - content: The response text
-            - usage: { 'prompt_tokens', 'completion_tokens' }
+            - usage: { 'prompt_tokens', 'completion_tokens', 'total_tokens' }
+            - cost: Optional estimated cost metadata
             - latency_ms: Response time
         """
         pass

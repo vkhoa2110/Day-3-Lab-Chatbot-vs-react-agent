@@ -336,6 +336,23 @@ INDEX_HTML = """<!doctype html>
       font-size: 12px;
     }
 
+    .llm-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0 0;
+      font-size: 12px;
+      color: #405363;
+    }
+
+    .metric-pill {
+      border: 1px solid #d4dee6;
+      border-radius: 999px;
+      background: #ffffff;
+      padding: 5px 9px;
+      white-space: nowrap;
+    }
+
     .composer {
       border-top: 1px solid var(--line);
       background: white;
@@ -566,6 +583,9 @@ INDEX_HTML = """<!doctype html>
       if (payload.room_cards?.length) {
         article.appendChild(renderRoomCards(payload.room_cards));
       }
+      if (payload.llm_metrics?.calls?.length) {
+        article.appendChild(renderLlmMetrics(payload.llm_metrics));
+      }
       if (payload.trace_text) {
         const details = document.createElement("details");
         details.className = "trace";
@@ -575,6 +595,27 @@ INDEX_HTML = """<!doctype html>
 
       messagesEl.appendChild(article);
       messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function renderLlmMetrics(metrics) {
+      const usage = metrics.total_usage || {};
+      const cost = metrics.total_cost || {};
+      const totalTokens = usage.total_tokens || 0;
+      const promptTokens = usage.prompt_tokens || 0;
+      const completionTokens = usage.completion_tokens || 0;
+      const totalCost = Number(cost.total_cost_usd || 0);
+      const wrap = document.createElement("div");
+      wrap.className = "llm-metrics";
+      const costLabel = cost.estimated
+        ? `$${totalCost.toFixed(6)}`
+        : "Chưa có dữ liệu";
+      wrap.innerHTML = `
+        <span class="metric-pill">Token: ${totalTokens}</span>
+        <span class="metric-pill">Prompt: ${promptTokens}</span>
+        <span class="metric-pill">Output: ${completionTokens}</span>
+        <span class="metric-pill">Chi phí ước tính: ${costLabel}</span>
+      `;
+      return wrap;
     }
 
     function renderLocations(options) {

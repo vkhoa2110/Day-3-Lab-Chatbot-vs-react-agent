@@ -100,6 +100,7 @@ class VinpearlRoomAgent:
                     "answer": response["answer"],
                     "status": response["status"],
                     "summary": response["summary"],
+                    "llm_metrics": response["llm_metrics"],
                     "room_cards": self._room_cards_for_log(response["room_cards"]),
                     "location_options": self._location_options_for_log(
                         response["location_options"]
@@ -118,6 +119,7 @@ class VinpearlRoomAgent:
                     "model": llm_extraction.get("_model"),
                     "error": llm_extraction.get("_error"),
                     "usage": llm_extraction.get("_usage"),
+                    "cost": llm_extraction.get("_cost"),
                     "intent": llm_extraction.get("intent"),
                     "location_query": llm_extraction.get("location_query"),
                     "checkin": llm_extraction.get("checkin"),
@@ -326,6 +328,7 @@ class VinpearlRoomAgent:
                     "model": llm_follow_up.get("_model"),
                     "error": llm_follow_up.get("_error"),
                     "usage": llm_follow_up.get("_usage"),
+                    "cost": llm_follow_up.get("_cost"),
                     "type": llm_follow_up.get("type"),
                     "criteria": llm_follow_up.get("criteria", {}),
                 },
@@ -1134,6 +1137,7 @@ class VinpearlRoomAgent:
                     "provider": result.get("provider"),
                     "model": self.llm.model_name,
                     "usage": result.get("usage", {}),
+                    "cost": result.get("cost", {}),
                     "latency_ms": result.get("latency_ms"),
                 },
             )
@@ -1143,6 +1147,7 @@ class VinpearlRoomAgent:
             parsed["_provider"] = result.get("provider")
             parsed["_model"] = self.llm.model_name
             parsed["_usage"] = result.get("usage", {})
+            parsed["_cost"] = result.get("cost", {})
             return parsed
         except Exception as exc:
             error_message = self._safe_error_message(str(exc))
@@ -1314,6 +1319,7 @@ class VinpearlRoomAgent:
                     "provider": result.get("provider"),
                     "model": self.llm.model_name,
                     "usage": result.get("usage", {}),
+                    "cost": result.get("cost", {}),
                     "latency_ms": result.get("latency_ms"),
                 },
             )
@@ -1321,6 +1327,7 @@ class VinpearlRoomAgent:
             parsed["_provider"] = result.get("provider")
             parsed["_model"] = self.llm.model_name
             parsed["_usage"] = result.get("usage", {})
+            parsed["_cost"] = result.get("cost", {})
             return parsed
         except Exception as exc:
             error_message = self._safe_error_message(str(exc))
@@ -1434,6 +1441,7 @@ class VinpearlRoomAgent:
             "status": status,
             "trace": trace,
             "trace_text": VinpearlRoomAgent._trace_to_text(trace, answer),
+            "llm_metrics": VinpearlRoomAgent._llm_metrics_from_trace(trace),
             "context": context,
             "room_cards": room_cards or [],
             "location_options": location_options or [],
@@ -1455,6 +1463,63 @@ class VinpearlRoomAgent:
             )
         blocks.append(f"Final Answer: {final_answer}")
         return "\n".join(blocks)
+
+    @staticmethod
+    def _llm_metrics_from_trace(trace: List[Dict[str, str]]) -> Dict[str, Any]:
+        calls = []
+        total_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        total_cost_usd = 0.0
+        has_cost = False
+
+        for item in trace:
+            observation = item.get("observation")
+            if not isinstance(observation, str):
+                continue
+            try:
+                data = json.loads(observation)
+            except json.JSONDecodeError:
+                continue
+
+            usage = data.get("usage") or {}
+            cost = data.get("cost") or {}
+            if not usage and not cost:
+                continue
+
+            for key in total_usage:
+                try:
+                    total_usage[key] += int(usage.get(key, 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+
+            try:
+                total_cost_usd += float(cost.get("total_cost_usd", 0) or 0)
+                has_cost = has_cost or "total_cost_usd" in cost
+            except (TypeError, ValueError):
+                pass
+
+            calls.append(
+                {
+                    "action": item.get("action"),
+                    "provider": data.get("provider"),
+                    "model": data.get("model"),
+                    "usage": usage,
+                    "cost": cost,
+                }
+            )
+
+        return {
+            "calls": calls,
+            "total_usage": total_usage,
+            "total_cost": {
+                "currency": "USD",
+                "total_cost_usd": round(total_cost_usd, 8),
+                "estimated": has_cost,
+            },
+        }
 
     def _ask_for_location(self, examples: List[Dict[str, str]]) -> str:
         sample = "; ".join(

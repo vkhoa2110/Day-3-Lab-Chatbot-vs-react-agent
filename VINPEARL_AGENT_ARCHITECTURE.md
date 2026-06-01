@@ -336,9 +336,23 @@ Nếu thấy:
 provider: openai
 model: gpt-4o
 usage: {...}
+cost: {...}
 ```
 
 thì app đã gọi OpenAI API thật.
+
+Từ bản cập nhật telemetry, mỗi lần gọi OpenAI còn có thêm:
+
+- `usage.prompt_tokens`, `usage.completion_tokens`, `usage.total_tokens`
+- `cost.input_cost_usd`, `cost.output_cost_usd`, `cost.total_cost_usd`
+- `llm_metrics` trong response `VINPEARL_QA`, tổng hợp token và cost của cả lượt chat
+
+Chi phí là ước tính theo USD/1M token trong `src/core/openai_provider.py`. Nếu cần dùng bảng giá khác, cấu hình:
+
+```env
+OPENAI_INPUT_COST_PER_1M_TOKENS=2.50
+OPENAI_OUTPUT_COST_PER_1M_TOKENS=10.00
+```
 
 ## 12. UI/API
 

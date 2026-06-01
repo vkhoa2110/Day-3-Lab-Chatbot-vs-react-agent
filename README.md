@@ -89,6 +89,13 @@ Observation: ...
 Final Answer: ...
 ```
 
+LLM telemetry:
+
+- OpenAI calls return token usage for prompt, completion, and total tokens.
+- The web UI shows total tokens and estimated cost under each assistant answer when an OpenAI call is used.
+- Logs include `usage` and `cost` fields for `OPENAI_EXTRACT_REQUEST`, `OPENAI_EXTRACT_FOLLOW_UP`, and `VINPEARL_QA`.
+- Cost is an estimate in USD and can be overridden in `.env` with `OPENAI_INPUT_COST_PER_1M_TOKENS` and `OPENAI_OUTPUT_COST_PER_1M_TOKENS`.
+
 ---
 
 *Happy Coding! Let's build agents that actually work.*

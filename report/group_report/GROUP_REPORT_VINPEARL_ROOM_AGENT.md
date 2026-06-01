@@ -136,6 +136,8 @@ Observed metrics from `logs/2026-06-01.log`, excluding fake unit-test LLM calls:
 | Average completion tokens per LLM call | 49.1 |
 | Total observed LLM tokens | 103,851 |
 
+The current implementation also records estimated USD cost for every OpenAI call. The fields are stored as `cost.input_cost_usd`, `cost.output_cost_usd`, and `cost.total_cost_usd`, then aggregated into `llm_metrics` for each `VINPEARL_QA` response. The estimate can be overridden with `OPENAI_INPUT_COST_PER_1M_TOKENS` and `OPENAI_OUTPUT_COST_PER_1M_TOKENS`.
+
 Observed QA status distribution:
 
 | Status | Count |
