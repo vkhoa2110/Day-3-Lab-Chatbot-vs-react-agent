@@ -1,7 +1,7 @@
 # Individual Report: Lab 3 - Chatbot vs ReAct Agent
 
-- **Student Name**: Lê Văn Khoa
-- **Student ID**: 2A202600603
+- **Student Name**: Lê Quang Hưng
+- **Student ID**: 2A202600891
 - **Date**: 2026-06-01
 - **Project**: Vinpearl Room Agent
 - **Final Test Command**: `python -m pytest -q`
@@ -13,7 +13,7 @@
 
 | Individual Rubric Component | Points | Evidence |
 | :--- | ---: | :--- |
-| I. Technical Contribution | 15 | Implemented and improved agent flow, OpenAI extraction, follow-up handling, telemetry, UI, and tests. |
+| I. Technical Contribution | 15 | Implemented `vinpearl_tools.py` data/search/availability logic and `web_app.py` browser UI, API routes, context handling, room cards, traces, and metrics display. |
 | II. Debugging Case Study | 10 | Analyzed follow-up filtering failure and OpenAI key failure using trace/log evidence, then fixed both. |
 | III. Personal Insights | 10 | Reflected on reliability, observations, tool use, and why ReAct is different from a normal chatbot. |
 | IV. Future Improvements | 5 | Proposed production scaling path with API/database backend, schema validation, RAG, and multi-agent split. |
@@ -22,83 +22,76 @@
 
 ## I. Technical Contribution (15 Points)
 
-My main contribution was designing and improving the Vinpearl room-availability agent as a domain-specific ReAct-style system. The objective was to avoid a free-form chatbot that could hallucinate room availability or prices, and instead build an agent that uses LLMs for understanding while relying on structured tools for final facts.
+### Focused Contribution: `vinpearl_tools.py` and `web_app.py`
+
+My main technical contribution was implementing the connection between the Vinpearl room dataset and the browser-based agent demo. I worked mostly on `src/tools/vinpearl_tools.py`, which prepares reliable hotel and room data for the agent, and `src/web_app.py`, which turns that agent into a usable web application.
+
+
 
 ### Modules Implemented / Modified
 
 | Module | Contribution |
 | :--- | :--- |
-| `src/agent/vinpearl_agent.py` | Implemented the main Vinpearl agent flow: intent extraction, scope guardrail, location resolution, availability check, follow-up handling, trace generation, final response formatting, and `llm_metrics` aggregation. |
-| `src/tools/vinpearl_tools.py` | Used the knowledge-base layer to resolve Vinpearl properties, check room availability, compute prices/promotions, and expose room details from structured data. |
-| `src/web_app.py` | Built the web UI/API flow for `/api/chat` and `/api/locations`, sidebar search, room cards, ReAct trace display, and token/cost metric pills. |
-| `src/core/openai_provider.py` | Integrated OpenAI through the `LLMProvider` interface and added token usage plus estimated cost metadata. |
-| `src/telemetry/metrics.py` | Replaced dummy cost tracking with structured estimated USD cost based on prompt/completion tokens and configurable per-1M-token rates. |
-| `src/agent/agent.py` | Added cost metadata to generic ReAct LLM-step logs. |
-| `tests/test_vinpearl_agent.py` | Added and maintained tests for core behavior, OpenAI usage, follow-up logic, hotline handling, compound criteria, and LLM metrics aggregation. |
-| `tests/test_vinpearl_area_followup.py` | Added focused tests for area-based follow-ups such as `trên 80m2` and `dưới 80m2`. |
-| `tests/test_openai_provider.py` | Added unit tests for `gpt-4o`, `gpt-4o-mini`, and cost override estimation. |
-| `VINPEARL_AGENT_ARCHITECTURE.md` | Documented architecture, context, tool usage, LLM responsibilities, logging, and debug process. |
+| `src/tools/vinpearl_tools.py` | Built the `VinpearlKnowledgeBase` data layer for loading regions, hotels, room types, availability, policies, meal plans, and promotions from the demo dataset. |
+| `src/tools/vinpearl_tools.py` | Implemented Vietnamese-friendly normalization and location matching so users can search by hotel name, short name, address, province, region, or alias. |
+| `src/tools/vinpearl_tools.py` | Implemented room availability checking with date validation, dataset range checks, guest-capacity filtering, stop-sell/status checks, nightly rates, total price calculation, and promotion discounts. |
+| `src/tools/vinpearl_tools.py` | Returned structured room results for the agent, including room name, area, max guests, bed options, amenities, meal plan, cancellation policy, available room count, total price, and formatted VND display. |
+| `src/tools/vinpearl_tools.py` | Added helper parsing functions for user text, including date-range extraction, guest-count extraction, and Vinpearl room-request detection. |
+| `src/web_app.py` | Built the browser-based UI and HTTP server with routes for `/`, `/api/locations`, and `/api/chat`. |
+| `src/web_app.py` | Implemented the sidebar search workflow for hotel/location selection, check-in/check-out dates, guest count, quick hints, and context collection. |
+| `src/web_app.py` | Created the chat UI that renders user messages, assistant answers, room cards, location-option cards, ReAct traces, and LLM token/cost metrics. |
+| `src/web_app.py` | Added frontend state handling for selected hotel, remembered context, generated search messages, loading status, backend errors, and reset behavior. |
+| `src/web_app.py` | Connected environment-based agent setup so the web app can use OpenAI when configured, while still falling back to the default agent path. |
 
 ### Code Highlights
 
-The most important design decision was separating language understanding from business facts:
+The main idea of my implementation was to keep the factual hotel logic in `vinpearl_tools.py`, while `web_app.py` collects user context and displays the agent response:
 
 ```text
-LLM = intent and criteria extraction
-Tool / dataset = source of truth
-Code filter = final room selection
-Formatter = final user answer
+Dataset -> VinpearlKnowledgeBase
+User form/chat -> web_app.py context
+Agent -> room availability tool
+Browser UI -> room cards, location choices, trace, and metrics
 ```
 
-Example user request:
+Example request sent from the web app:
 
 ```text
-tôi cần phòng có giường King, buffet sáng, diện tích phòng lớn
+Find Vinpearl rooms at Bai Dai from 15/07/2026 to 18/07/2026 for 2 guests
 ```
 
-Expected LLM criteria:
+Example context payload sent to `/api/chat`:
 
 ```json
 {
-  "type": "refine",
-  "criteria": {
-    "bed_keywords": ["king"],
-    "amenity_keywords": ["buffet"],
-    "sort": "largest"
-  }
+  "location": "Bai Dai",
+  "checkin": "2026-07-15",
+  "checkout": "2026-07-18",
+  "guests": 2
 }
 ```
 
-The final room list is not generated by the LLM. It is produced by deterministic filtering in `_select_options_for_response`, so the system cannot invent room names, prices, availability, or policies.
+`VinpearlKnowledgeBase.check_room_availability` then checks dates, guests, available inventory, nightly rates, promotions, and total price before returning structured room options to the agent.
 
-### Telemetry Contribution
+### Web App Contribution
 
-I added token and cost visibility so the app can be evaluated like a production prototype:
+The web app makes the agent easier to test because it supports both natural-language chat and form-based search. The sidebar stores the hotel, location, check-in date, check-out date, and number of guests. The chat area then renders the response in a visual format instead of showing only plain text.
 
-```text
-usage.prompt_tokens
-usage.completion_tokens
-usage.total_tokens
-cost.input_cost_usd
-cost.output_cost_usd
-cost.total_cost_usd
-```
+The UI renders:
 
-These fields are now available in:
-
-- `OPENAI_EXTRACT_REQUEST`
-- `OPENAI_EXTRACT_FOLLOW_UP`
-- `LLM_METRIC`
-- `VINPEARL_QA`
-- web UI metric pills under assistant answers
+- assistant answer text,
+- room cards with price, area, guests, bed options, meal plan, policy, amenities, and promotions,
+- location-choice cards when the query is ambiguous,
+- ReAct trace output for debugging,
+- token and estimated-cost metric pills when LLM usage data is available.
 
 ### Evidence of Code Quality
 
-- Agent responsibilities are modular: extraction, scope check, location resolution, availability check, follow-up classification, filtering, formatting, logging.
-- LLM calls are wrapped in `try/except` with fallback behavior.
-- Invalid OpenAI-key errors are sanitized and disable LLM use for the current agent session.
-- The project `.env` is loaded with `override=True` to avoid stale environment variables.
-- Final tests pass:
+- `vinpearl_tools.py` keeps dataset loading, text normalization, hotel matching, date parsing, guest parsing, availability checking, and promotion calculation in separate helper functions.
+- The availability checker handles invalid dates, out-of-range demo dates, unavailable rooms, stop-sell records, guest-capacity limits, and formatted VND output.
+- `web_app.py` exposes clear JSON endpoints for location loading and chat requests.
+- The frontend escapes dynamic values before rendering them in room cards, location cards, and traces.
+- The final regression suite passes:
 
 ```text
 20 passed

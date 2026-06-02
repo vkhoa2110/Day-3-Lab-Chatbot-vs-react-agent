@@ -6,7 +6,7 @@
   - Nguyễn Phúc Hiếu - 2A202600747
   - Lê Quang Hưng - 2A202600891
 - **Deployment Date**: 2026-06-01
-- **Repository Branches**: `main`, `Khoa`
+- **Repository Branches**: `main`, `Khoa`, `Hung`
 - **Final Test Command**: `python -m pytest -q`
 - **Final Test Result**: `20 passed`
 
